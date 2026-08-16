@@ -1,0 +1,52 @@
+[package]
+name = "code-atlas"
+version = "0.1.0"
+authors = ["Philipp Tessenow <philipp@tessenow.org>"]
+edition = "2024"
+rust-version = "1.87"
+license = "MIT"
+repository = "https://github.com/tessi/code-atlas"
+documentation = "https://docs.rs/code-atlas"
+readme = "README.md"
+keywords = ["visualization", "treemap", "codebase", "architecture", "call-graph"]
+categories = ["command-line-utilities", "development-tools", "visualization"]
+default-run = "code-atlas"
+publish = ["crates-io"]
+include = [
+    "/src/**",
+    "/tests/**",
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/README.md",
+    "/LICENSE-MIT",
+    "/CHANGELOG.md",
+    "/CODE_OF_CONDUCT.md",
+    "/CONTRIBUTING.md",
+    "/RELEASING.md",
+    "/SECURITY.md",
+]
+description = "Render local code repositories as architectural treemaps with line-addressed, hierarchically bundled call graphs"
+
+[dependencies]
+anyhow = "1.0"
+base64 = { version = "0.23", default-features = false, features = ["std"] }
+bytemuck = { version = "1.24", features = ["derive"] }
+clap = { version = "4.6", features = ["derive"] }
+fontdue = "0.9"
+pollster = "1.0"
+rayon = "1.11"
+regex = "1.12"
+proc-macro2 = { version = "1.0", features = ["span-locations"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.11"
+syn = { version = "3.0", features = ["full", "visit"] }
+tempfile = "3.24"
+tiny-skia = "0.12"
+wgpu = "30.0"
+zlib-rs = { version = "0.6", default-features = false, features = ["std"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

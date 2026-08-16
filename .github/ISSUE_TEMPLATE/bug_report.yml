@@ -1,0 +1,54 @@
+name: Bug report
+description: Report reproducible incorrect behavior or output
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for taking the time to report a problem. Do not include private repository paths or source code.
+  - type: input
+    id: version
+    attributes:
+      label: Code Atlas version
+      description: Paste the output of `code-atlas --version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Linux
+        - macOS
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the actual and expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Provide the command, a minimal public repository if possible, and relevant report warnings.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: coverage
+    attributes:
+      label: Analyzer coverage
+      description: Paste the non-sensitive `language_coverage` and warnings from the sidecar report when relevant.
+      render: json
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I removed confidential source, paths, and project metadata.
+          required: true
+        - label: I searched existing issues for this problem.
+          required: true

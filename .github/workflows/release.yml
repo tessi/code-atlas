@@ -1,0 +1,103 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.*"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  validate:
+    name: Validate release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Match tag to Cargo version
+        shell: bash
+        run: |
+          manifest_version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          test "v${manifest_version}" = "${GITHUB_REF_NAME}"
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets --all-features --locked -- -D warnings
+      - run: cargo test --all-features --locked
+      - run: cargo package --locked
+
+  create-release:
+    name: Create GitHub Release
+    needs: publish-crate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: taiki-e/create-gh-release-action@eba8ea96c86cca8a37f1b56e94b4d13301fba651 # v1
+        with:
+          changelog: CHANGELOG.md
+
+  upload-binaries:
+    name: Build ${{ matrix.target }}
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            build-tool: cargo
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            build-tool: cross
+          - target: universal-apple-darwin
+            os: macos-latest
+            build-tool: cargo
+    runs-on: ${{ matrix.os }}
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build and upload archive
+        id: upload
+        uses: taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6 # v1
+        with:
+          bin: code-atlas
+          target: ${{ matrix.target }}
+          build-tool: ${{ matrix.build-tool }}
+          archive: code-atlas-$tag-$target
+          include: README.md LICENSE-MIT
+          leading-dir: true
+          locked: true
+          checksum: sha256
+          tar: unix
+      - name: Attest archive
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: ${{ steps.upload.outputs.tar }}
+
+  publish-crate:
+    name: Publish crates.io package
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: stable
+      - name: Publish crate
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked

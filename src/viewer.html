@@ -1,0 +1,1689 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Code Atlas</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --atlas-bg: #060a11;
+      --atlas-land: #0d141e;
+      --atlas-ink: rgba(205,218,235,.86);
+      --atlas-muted: rgba(205,218,235,.62);
+      --atlas-line: rgba(160,180,205,.34);
+      --atlas-panel: rgba(10,16,25,.94);
+      --atlas-panel-solid: #0a1019;
+      --atlas-source: #ff468e;
+      --atlas-target: #37d2ff;
+      --atlas-focus: #f5d76e;
+      --atlas-shadow: rgba(0,0,0,.34);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+    body { background: var(--atlas-bg); color: var(--atlas-ink); }
+    button, input, select { font: inherit; }
+    button, select, input[type="search"] {
+      color: var(--atlas-ink);
+      background: color-mix(in srgb, var(--atlas-panel-solid) 88%, var(--atlas-ink) 12%);
+      border: 1px solid var(--atlas-line);
+      border-radius: 3px;
+    }
+    button { min-height: 30px; padding: 4px 9px; cursor: pointer; }
+    button:hover, button:focus-visible, select:hover, input[type="search"]:focus-visible {
+      border-color: var(--atlas-muted);
+      outline: none;
+    }
+    button:focus-visible, select:focus-visible, input:focus-visible {
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--atlas-target) 55%, transparent);
+    }
+    button[aria-pressed="true"] { border-color: var(--atlas-target); }
+    button:disabled, select:disabled { opacity: .45; cursor: default; }
+    #code-atlas-app {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      width: 100%;
+      height: 100%;
+      background: var(--atlas-bg);
+    }
+    .atlas-bar {
+      min-height: 46px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 10px 6px 12px;
+      border-bottom: 1px solid var(--atlas-line);
+      background: var(--atlas-panel-solid);
+      box-shadow: 0 2px 12px var(--atlas-shadow);
+      z-index: 4;
+    }
+    .atlas-brand { min-width: 0; margin-right: auto; }
+    .atlas-title { display: block; font-size: 14px; font-weight: 500; letter-spacing: .06em; }
+    .atlas-meta { display: block; margin-top: 2px; color: var(--atlas-muted); font-size: 11px; }
+    .atlas-head-actions { display: flex; align-items: center; }
+    .atlas-copy-link { min-width: 78px; }
+    .atlas-copy-link.is-copied { border-color: var(--atlas-target); }
+    .atlas-call-query { position: relative; display: grid; grid-template-columns: minmax(100px, 1fr) auto auto; min-width: 0; align-items: center; }
+    .atlas-call-query input { min-width: 0; width: 100%; min-height: 30px; padding: 5px 8px; border-radius: 3px 0 0 3px; }
+    .atlas-call-query input[aria-invalid="true"] { border-color: var(--atlas-source); }
+    .atlas-query-clear { min-width: 29px; min-height: 30px; margin-left: -1px; padding: 1px 7px; border-radius: 0; color: var(--atlas-muted); }
+    .atlas-query-clear:hover, .atlas-query-clear:focus-visible { color: var(--atlas-ink); }
+    .atlas-query-help { position: relative; }
+    .atlas-query-help summary { display: grid; width: 30px; height: 30px; margin-left: -1px; place-items: center; color: var(--atlas-muted); background: color-mix(in srgb, var(--atlas-panel-solid) 88%, var(--atlas-ink) 12%); border: 1px solid var(--atlas-line); border-radius: 0 3px 3px 0; cursor: pointer; list-style: none; user-select: none; }
+    .atlas-query-help summary::-webkit-details-marker { display: none; }
+    .atlas-query-help summary:hover, .atlas-query-help summary:focus-visible, .atlas-query-help[open] summary { color: var(--atlas-ink); border-color: var(--atlas-muted); outline: none; }
+    .atlas-query-help.has-error summary { color: var(--atlas-source); border-color: var(--atlas-source); }
+    .atlas-query-help-card { position: absolute; top: 38px; right: 0; width: min(390px, calc(100vw - 24px)); max-height: calc(100vh - 100px); overflow: auto; padding: 13px; color: var(--atlas-ink); background: var(--atlas-panel-solid); border: 1px solid var(--atlas-line); box-shadow: 0 12px 30px var(--atlas-shadow); font-size: 11px; line-height: 1.45; z-index: 8; }
+    .atlas-query-help-card h2 { margin: 0 0 5px; font-size: 12px; font-weight: 600; }
+    .atlas-query-help-card p { margin: 0 0 10px; color: var(--atlas-muted); }
+    .atlas-query-help-error { margin: 0 0 10px; padding: 7px 8px; color: var(--atlas-source); border: 1px solid color-mix(in srgb, var(--atlas-source) 58%, var(--atlas-line)); }
+    .atlas-query-fields { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 5px 10px; margin: 0 0 11px; }
+    .atlas-query-fields dt, .atlas-query-fields dd { margin: 0; }
+    .atlas-query-fields dt { color: var(--atlas-target); }
+    .atlas-query-fields dd { color: var(--atlas-muted); }
+    .atlas-query-logic { padding: 8px 0; border-top: 1px solid var(--atlas-line); border-bottom: 1px solid var(--atlas-line); color: var(--atlas-muted); }
+    .atlas-query-examples { display: grid; gap: 5px; margin-top: 10px; }
+    .atlas-query-example { min-height: 0; padding: 6px 7px; text-align: left; background: transparent; }
+    .atlas-query-example code { display: block; color: var(--atlas-ink); font: inherit; }
+    .atlas-query-example span { display: block; margin-top: 2px; color: var(--atlas-muted); font-size: 10px; }
+    .atlas-query-message { position: absolute; top: 37px; right: 0; width: min(390px, calc(100vw - 24px)); padding: 8px 10px; color: var(--atlas-source); background: var(--atlas-panel-solid); border: 1px solid color-mix(in srgb, var(--atlas-source) 68%, var(--atlas-line)); box-shadow: 0 8px 22px var(--atlas-shadow); font-size: 10px; line-height: 1.4; z-index: 7; }
+    .atlas-query-message.is-obscured { display: none; }
+    .atlas-toggle { display: inline-flex; gap: 5px; align-items: center; font-size: 12px; color: var(--atlas-muted); }
+    .atlas-toggle input { accent-color: var(--atlas-target); }
+    .atlas-map-zoom { position: absolute; top: 11px; left: 11px; display: grid; border: 1px solid var(--atlas-line); box-shadow: 0 5px 16px var(--atlas-shadow); z-index: 3; }
+    .atlas-map-zoom button { width: 36px; min-width: 36px; min-height: 34px; padding: 3px; border: 0; border-bottom: 1px solid var(--atlas-line); border-radius: 0; background: var(--atlas-panel); }
+    .atlas-map-zoom button:last-child { border-bottom: 0; }
+    .atlas-map-zoom button:hover, .atlas-map-zoom button:focus-visible { background: var(--atlas-panel-solid); }
+    .atlas-map-layers { position: absolute; top: 11px; right: 11px; z-index: 4; }
+    .atlas-map-layers summary { min-width: 62px; min-height: 32px; display: grid; place-items: center; padding: 4px 8px; color: var(--atlas-muted); background: var(--atlas-panel); border: 1px solid var(--atlas-line); box-shadow: 0 5px 16px var(--atlas-shadow); cursor: pointer; list-style: none; }
+    .atlas-map-layers summary::-webkit-details-marker { display: none; }
+    .atlas-map-layers summary:hover, .atlas-map-layers summary:focus-visible, .atlas-map-layers[open] summary { color: var(--atlas-ink); border-color: var(--atlas-muted); outline: none; }
+    .atlas-layers-card { position: absolute; top: 38px; right: 0; display: grid; gap: 9px; min-width: 158px; padding: 10px; background: var(--atlas-panel-solid); border: 1px solid var(--atlas-line); box-shadow: 0 9px 24px var(--atlas-shadow); }
+    .atlas-theme-choice { display: grid; gap: 5px; padding-top: 8px; border-top: 1px solid var(--atlas-line); color: var(--atlas-muted); font-size: 11px; }
+    .atlas-theme-choice select { width: 100%; min-height: 30px; padding: 4px 7px; }
+    .atlas-active-query { position: absolute; top: 11px; left: 58px; display: inline-grid; grid-template-columns: minmax(0, 1fr) auto; max-width: min(430px, calc(100% - 150px)); align-items: center; color: var(--atlas-ink); background: var(--atlas-panel); border: 1px solid var(--atlas-line); box-shadow: 0 5px 16px var(--atlas-shadow); font-size: 10px; z-index: 3; }
+    .atlas-active-query span { min-width: 0; padding: 7px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .atlas-active-query button { min-width: 28px; min-height: 28px; padding: 2px 7px; border: 0; border-left: 1px solid var(--atlas-line); border-radius: 0; background: transparent; color: var(--atlas-muted); }
+    .atlas-direction { position: absolute; right: 10px; bottom: 9px; display: inline-flex; align-items: center; gap: 5px; padding: 4px 7px; color: var(--atlas-muted); background: color-mix(in srgb, var(--atlas-panel) 84%, transparent); border: 1px solid color-mix(in srgb, var(--atlas-line) 70%, transparent); font-size: 10px; pointer-events: none; z-index: 2; }
+    .atlas-direction-line { width: 42px; height: 2px; background: linear-gradient(90deg, var(--atlas-source), var(--atlas-target)); }
+    .atlas-main { min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 330px; }
+    #atlas-stage {
+      position: relative;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      background: var(--atlas-bg);
+      touch-action: none;
+      user-select: none;
+    }
+    #atlas-canvas, #atlas-call-canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
+    #atlas-canvas { z-index: 0; cursor: grab; }
+    #atlas-call-canvas { z-index: 1; pointer-events: none; }
+    #atlas-canvas.is-panning { cursor: grabbing; }
+    #atlas-canvas.has-file { cursor: pointer; }
+    #atlas-canvas.has-call { cursor: crosshair; }
+    #atlas-tooltip {
+      position: absolute;
+      display: none;
+      max-width: min(380px, calc(100% - 24px));
+      padding: 7px 9px;
+      color: var(--atlas-ink);
+      background: var(--atlas-panel);
+      border: 1px solid var(--atlas-line);
+      box-shadow: 0 6px 20px var(--atlas-shadow);
+      pointer-events: none;
+      font-size: 11px;
+      line-height: 1.45;
+      z-index: 3;
+    }
+    #atlas-tooltip strong { display: block; font-weight: 500; overflow-wrap: anywhere; }
+    #atlas-tooltip span { color: var(--atlas-muted); }
+    .atlas-status {
+      position: absolute;
+      left: 10px;
+      bottom: 9px;
+      padding: 4px 7px;
+      color: var(--atlas-muted);
+      background: color-mix(in srgb, var(--atlas-panel) 84%, transparent);
+      border: 1px solid color-mix(in srgb, var(--atlas-line) 70%, transparent);
+      font-size: 10px;
+      pointer-events: none;
+    }
+    .atlas-panel {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr);
+      background: var(--atlas-panel-solid);
+      border-left: 1px solid var(--atlas-line);
+    }
+    .atlas-panel-tools { display: grid; gap: 8px; padding: 10px; border-bottom: 1px solid var(--atlas-line); }
+    .atlas-search { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
+    .atlas-search input { min-width: 0; width: 100%; padding: 6px 8px; }
+    .atlas-call-scope { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; color: var(--atlas-muted); font-size: 10px; }
+    .atlas-call-scope select { min-width: 0; max-width: 160px; }
+    .atlas-selection { padding: 11px 12px; border-bottom: 1px solid var(--atlas-line); }
+    .atlas-empty { color: var(--atlas-muted); font-size: 12px; line-height: 1.5; }
+    .atlas-selected-call { margin: 0 0 12px; padding: 0 0 12px; border-bottom: 1px solid var(--atlas-line); }
+    .atlas-selected-call-label { margin-bottom: 7px; color: var(--atlas-muted); font-size: 10px; letter-spacing: .08em; }
+    .atlas-call-route { display: grid; gap: 4px; margin-bottom: 8px; }
+    .atlas-call-endpoint { min-width: 0; font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; white-space: pre-line; }
+    .atlas-call-endpoint.source { color: var(--atlas-source); }
+    .atlas-call-endpoint.target { color: var(--atlas-target); }
+    .atlas-call-endpoint[href] { text-decoration-color: currentColor; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+    .atlas-call-endpoint:not([href]) { text-decoration: none; }
+    .atlas-call-arrow { color: var(--atlas-muted); font-size: 11px; }
+    .atlas-selected-call-meta { color: var(--atlas-muted); font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
+    .atlas-file-path { margin: 0 0 8px; font-size: 12px; font-weight: 500; overflow-wrap: anywhere; }
+    .atlas-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px 12px; margin: 0; }
+    .atlas-facts div { min-width: 0; }
+    .atlas-facts dt { color: var(--atlas-muted); font-size: 10px; }
+    .atlas-facts dd { margin: 2px 0 0; font-size: 12px; overflow-wrap: anywhere; }
+    .atlas-call-section { min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+    .atlas-call-heading { display: flex; align-items: center; justify-content: space-between; padding: 9px 11px 7px; font-size: 11px; color: var(--atlas-muted); }
+    #atlas-call-list { min-height: 0; overflow: auto; padding: 0 7px 7px; }
+    .atlas-call-item {
+      display: block;
+      width: 100%;
+      min-height: 0;
+      margin: 0 0 5px;
+      padding: 7px 8px;
+      text-align: left;
+      line-height: 1.35;
+      background: transparent;
+      border-color: color-mix(in srgb, var(--atlas-line) 72%, transparent);
+    }
+    .atlas-call-item strong { display: block; font-size: 11px; font-weight: 500; overflow-wrap: anywhere; }
+    .atlas-call-item span { display: block; margin-top: 2px; color: var(--atlas-muted); font-size: 10px; overflow-wrap: anywhere; }
+    .atlas-call-item.outgoing strong::first-letter { color: var(--atlas-source); }
+    .atlas-call-item.incoming strong::first-letter { color: var(--atlas-target); }
+    .atlas-call-item.is-active { border-color: var(--atlas-focus); }
+    .atlas-pages { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 10px 10px; border-top: 1px solid var(--atlas-line); font-size: 10px; color: var(--atlas-muted); }
+    .atlas-pages button { min-height: 27px; }
+    @media (max-width: 840px) {
+      .atlas-main { grid-template-columns: 1fr; grid-template-rows: minmax(260px, 1fr) minmax(210px, 36%); }
+      .atlas-panel { grid-template-columns: 220px minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); border-left: 0; border-top: 1px solid var(--atlas-line); }
+      .atlas-panel-tools { grid-column: 1; grid-row: 1; }
+      .atlas-selection { grid-column: 1; grid-row: 2; border-bottom: 0; border-right: 1px solid var(--atlas-line); overflow: auto; }
+      .atlas-call-section { grid-column: 2; grid-row: 1 / span 2; }
+      .atlas-query-help-card { top: auto; right: auto; bottom: 38px; left: 0; }
+      .atlas-query-message { top: auto; right: auto; bottom: 37px; left: 0; }
+    }
+    @media (max-width: 560px) {
+      .atlas-meta { display: none; }
+      .atlas-copy-link { min-width: 68px; }
+      .atlas-main { grid-template-rows: minmax(260px, 1fr) 250px; }
+      .atlas-panel { grid-template-columns: 1fr; grid-template-rows: auto auto minmax(0, 1fr); }
+      .atlas-panel-tools, .atlas-selection, .atlas-call-section { grid-column: 1; grid-row: auto; }
+      .atlas-selection { display: none; }
+      .atlas-call-section { min-height: 0; }
+      .atlas-query-help-card { position: fixed; top: 58px; right: 12px; bottom: auto; left: 12px; width: auto; max-height: calc(100vh - 70px); }
+      .atlas-active-query { max-width: calc(100% - 130px); }
+    }
+  </style>
+</head>
+<body>
+  <main id="code-atlas-app">
+    <header class="atlas-bar">
+      <div class="atlas-brand">
+        <span id="atlas-title" class="atlas-title">CODE ATLAS</span>
+        <span id="atlas-meta" class="atlas-meta"></span>
+      </div>
+      <div class="atlas-head-actions" aria-label="Sharing controls">
+        <button id="atlas-copy-link" class="atlas-copy-link" type="button">Copy link</button>
+      </div>
+    </header>
+    <div class="atlas-main">
+      <section id="atlas-stage" aria-label="Interactive repository atlas">
+        <canvas id="atlas-canvas">Your browser needs Canvas support to display this repository atlas.</canvas>
+        <canvas id="atlas-call-canvas" aria-hidden="true" hidden></canvas>
+        <div id="atlas-tooltip" role="tooltip"></div>
+        <div class="atlas-map-zoom" aria-label="Map zoom controls">
+          <button id="atlas-zoom-in" type="button" aria-label="Zoom in">+</button>
+          <button id="atlas-reset" type="button" aria-label="Fit treemap">Fit</button>
+          <button id="atlas-zoom-out" type="button" aria-label="Zoom out">−</button>
+        </div>
+        <details id="atlas-layers" class="atlas-map-layers">
+          <summary aria-label="Map layers" title="Map layers">Layers</summary>
+          <div class="atlas-layers-card">
+            <label class="atlas-toggle"><input id="atlas-show-calls" type="checkbox" checked> Calls</label>
+            <label class="atlas-toggle"><input id="atlas-show-labels" type="checkbox" checked> Labels</label>
+            <label class="atlas-theme-choice" for="atlas-theme-mode">
+              <span>Appearance</span>
+              <select id="atlas-theme-mode">
+                <option value="system">System</option>
+                <option value="light">Light</option>
+                <option value="dark">Dark</option>
+              </select>
+            </label>
+          </div>
+        </details>
+        <div id="atlas-active-query" class="atlas-active-query" hidden>
+          <span id="atlas-active-query-text"></span>
+          <button id="atlas-active-query-clear" type="button" aria-label="Clear active call filter" title="Clear active call filter">×</button>
+        </div>
+        <div id="atlas-status" class="atlas-status" aria-live="polite"></div>
+        <span class="atlas-direction" aria-label="Call direction from source to target">
+          source <span class="atlas-direction-line"></span> target
+        </span>
+      </section>
+      <aside class="atlas-panel" aria-label="Repository inspector">
+        <section class="atlas-panel-tools" aria-label="Repository navigation and call filters">
+          <form id="atlas-search" class="atlas-search" role="search">
+            <input id="atlas-search-input" type="search" placeholder="Find a file path" aria-label="Find a file path">
+            <button type="submit">Find</button>
+          </form>
+          <div class="atlas-call-query">
+            <input id="atlas-call-query" type="search" placeholder="Filter calls · in:*delivery*" aria-label="Filter individual calls" aria-describedby="atlas-query-message" autocomplete="off" spellcheck="false">
+            <button id="atlas-query-clear" class="atlas-query-clear" type="button" aria-label="Clear call filter" title="Clear call filter">×</button>
+            <details id="atlas-query-help" class="atlas-query-help">
+              <summary aria-label="Call filter help" title="Call filter help">?</summary>
+              <div class="atlas-query-help-card" role="dialog" aria-labelledby="atlas-query-help-title">
+                <h2 id="atlas-query-help-title">Filter individual calls</h2>
+                <p>Case-insensitive globs. Every match remains a separate callsite.</p>
+                <div id="atlas-query-help-error" class="atlas-query-help-error" role="status" hidden></div>
+                <dl class="atlas-query-fields">
+                  <dt><code>in:</code> / <code>to:</code></dt><dd>target file path</dd>
+                  <dt><code>out:</code> / <code>from:</code></dt><dd>source file path</dd>
+                  <dt><code>path:</code></dt><dd>either endpoint path</dd>
+                  <dt><code>callee:</code></dt><dd>called symbol</dd>
+                  <dt><code>analyzer:</code></dt><dd>analyzer name</dd>
+                </dl>
+                <div class="atlas-query-logic">Spaces mean AND · <code>|</code> means OR · <code>-</code> excludes · <code>*</code> and <code>?</code> are wildcards · quotes preserve spaces.</div>
+                <div class="atlas-query-examples" aria-label="Call filter examples">
+                  <button class="atlas-query-example" type="button" data-query="in:*delivery*"><code>in:*delivery*</code><span>Calls into matching files</span></button>
+                  <button class="atlas-query-example" type="button" data-query="out:*attempts* in:*delivery*"><code>out:*attempts* in:*delivery*</code><span>Combine source and target constraints</span></button>
+                  <button class="atlas-query-example" type="button" data-query="path:*clickhouse* -in:*deprecated*"><code>path:*clickhouse* -in:*deprecated*</code><span>Match either side, then exclude</span></button>
+                </div>
+              </div>
+            </details>
+            <span id="atlas-query-message" class="atlas-query-message" aria-live="polite" hidden></span>
+          </div>
+          <label id="atlas-call-scope" class="atlas-call-scope" hidden>
+            <span>Relative to selected file</span>
+            <select id="atlas-call-mode" aria-label="Calls relative to the selected file">
+              <option value="all">All matching calls</option>
+              <option value="connected">Connected</option>
+              <option value="incoming">Incoming</option>
+              <option value="outgoing">Outgoing</option>
+            </select>
+          </label>
+        </section>
+        <section id="atlas-selection" class="atlas-selection" aria-live="polite">
+          <div id="atlas-empty" class="atlas-empty">Hover a route or parcel to inspect it. Click a route for its exact callsite, or a file to reveal every incoming and outgoing call.</div>
+          <div id="atlas-selected-call" class="atlas-selected-call" hidden>
+            <div class="atlas-selected-call-label">SELECTED CALLSITE</div>
+            <div class="atlas-call-route">
+              <a id="atlas-call-source" class="atlas-call-endpoint source" target="_blank" rel="noopener noreferrer"></a>
+              <div class="atlas-call-arrow">↓</div>
+              <a id="atlas-call-target" class="atlas-call-endpoint target" target="_blank" rel="noopener noreferrer"></a>
+            </div>
+            <div id="atlas-selected-call-meta" class="atlas-selected-call-meta"></div>
+          </div>
+          <div id="atlas-file-details" hidden>
+            <h2 id="atlas-file-path" class="atlas-file-path"></h2>
+            <dl class="atlas-facts">
+              <div><dt>Language</dt><dd id="atlas-file-language"></dd></div>
+              <div><dt>Lines</dt><dd id="atlas-file-loc"></dd></div>
+              <div><dt>Commits</dt><dd id="atlas-file-commits"></dd></div>
+              <div><dt>Size</dt><dd id="atlas-file-bytes"></dd></div>
+              <div><dt>Outgoing</dt><dd id="atlas-file-outgoing"></dd></div>
+              <div><dt>Incoming</dt><dd id="atlas-file-incoming"></dd></div>
+            </dl>
+          </div>
+        </section>
+        <section class="atlas-call-section">
+          <div class="atlas-call-heading"><span id="atlas-call-heading">CALLS</span><span id="atlas-call-count"></span></div>
+          <div id="atlas-call-list"></div>
+          <div class="atlas-pages">
+            <button id="atlas-page-prev" type="button">Previous</button>
+            <span id="atlas-page-label">No file selected</span>
+            <button id="atlas-page-next" type="button">Next</button>
+          </div>
+        </section>
+      </aside>
+    </div>
+  </main>
+  <script id="code-atlas-data" type="application/json">__CODE_ATLAS_DATA__</script>
+  <script>
+  (() => {
+    'use strict';
+    __CODE_ATLAS_WEBGPU__
+    const data = JSON.parse(document.getElementById('code-atlas-data').textContent);
+    const app = document.getElementById('code-atlas-app');
+    const stage = document.getElementById('atlas-stage');
+    const canvas = document.getElementById('atlas-canvas');
+    const callCanvas = document.getElementById('atlas-call-canvas');
+    const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
+    const tooltip = document.getElementById('atlas-tooltip');
+    const status = document.getElementById('atlas-status');
+    const callMode = document.getElementById('atlas-call-mode');
+    const callQuery = document.getElementById('atlas-call-query');
+    const queryClear = document.getElementById('atlas-query-clear');
+    const queryHelp = document.getElementById('atlas-query-help');
+    const queryHelpError = document.getElementById('atlas-query-help-error');
+    const queryMessage = document.getElementById('atlas-query-message');
+    const callScope = document.getElementById('atlas-call-scope');
+    const layers = document.getElementById('atlas-layers');
+    const themeMode = document.getElementById('atlas-theme-mode');
+    const activeQuery = document.getElementById('atlas-active-query');
+    const activeQueryText = document.getElementById('atlas-active-query-text');
+    const activeQueryClear = document.getElementById('atlas-active-query-clear');
+    const copyLinkButton = document.getElementById('atlas-copy-link');
+    const showCalls = document.getElementById('atlas-show-calls');
+    const showLabels = document.getElementById('atlas-show-labels');
+    const callList = document.getElementById('atlas-call-list');
+    const pageLabel = document.getElementById('atlas-page-label');
+    const pagePrev = document.getElementById('atlas-page-prev');
+    const pageNext = document.getElementById('atlas-page-next');
+    const pageSize = 80;
+    const themeStorageKey = 'code-atlas.theme.preference.v1';
+    const systemTheme = typeof window.matchMedia === 'function'
+      ? window.matchMedia('(prefers-color-scheme: dark)')
+      : null;
+    let themePreference = readThemePreference();
+    let resolvedTheme = resolveTheme();
+    let activeTheme = data.themes[resolvedTheme];
+    const css = document.documentElement.style;
+    applyThemeStyles();
+    document.title = data.title;
+    document.getElementById('atlas-title').textContent = data.title.toUpperCase();
+    document.getElementById('atlas-meta').textContent = `${data.files.length.toLocaleString()} files / ${data.calls.length.toLocaleString()} calls / ${data.revision.slice(0, 12)}${data.dirty ? ' / dirty' : ''}`;
+
+    const fileById = new Map(data.files.map(file => [file.id, file]));
+    const fileByPath = new Map(data.files.map(file => [file.path, file]));
+    const callById = new Map(data.calls.map(call => [String(call.id), call]));
+    for (let index = 0; index < data.files.length; index++) {
+      const file = data.files[index];
+      file.index = index;
+      file.queryPath = file.path.toLowerCase();
+    }
+    for (let index = 0; index < data.labels.length; index++) data.labels[index].index = index;
+    const hitFiles = [...data.files].sort((a, b) => rectArea(a.rect) - rectArea(b.rect) || b.depth - a.depth);
+    const rawPoints = base64Bytes(data.curvePointsBase64);
+    const pointView = new DataView(rawPoints.buffer, rawPoints.byteOffset, rawPoints.byteLength);
+    const pickGridColumns = 96;
+    const pickGridRows = Math.max(24, Math.round(pickGridColumns * data.height / data.width));
+    const pickSegmentStride = data.calls.reduce((maximum, call) => Math.max(maximum, call.pointCount), 1);
+    const pickGrid = Array.from({ length: pickGridColumns * pickGridRows }, () => []);
+    const pickSeen = new Uint32Array(data.calls.length * pickSegmentStride);
+    let pickGeneration = 0;
+    let pickIndexReady = false;
+    for (let index = 0; index < data.calls.length; index++) {
+      const call = data.calls[index];
+      call.index = index;
+      call.queryCallee = call.callee.toLowerCase();
+      call.queryAnalyzer = call.analyzer.toLowerCase();
+      call.path = null;
+      call.worldBounds = [
+        call.bounds[0] / 65535 * data.width,
+        call.bounds[1] / 65535 * data.height,
+        call.bounds[2] / 65535 * data.width,
+        call.bounds[3] / 65535 * data.height
+      ];
+    }
+
+    const state = {
+      x: 0,
+      y: 0,
+      scale: 1,
+      fitScale: 1,
+      hoveredFile: null,
+      selectedFile: null,
+      hoveredCall: null,
+      selectedCall: null,
+      pointerDown: false,
+      dragging: false,
+      pointerStartX: 0,
+      pointerStartY: 0,
+      viewStartX: 0,
+      viewStartY: 0,
+      pointerCall: null,
+      pointerFile: null,
+      page: 0,
+      renderQueued: false,
+      drawnCalls: 0,
+      cssWidth: 1,
+      cssHeight: 1,
+      dpr: 1,
+      applyingHash: false,
+      hashSyncTimer: null,
+      queryText: '',
+      queryMask: new Uint8Array(data.calls.length).fill(1),
+      queryMatchCount: data.calls.length,
+      filteredCallCount: data.calls.length,
+      visibleCallCount: data.calls.length,
+      queryGeneration: 0,
+      queryTimer: null,
+      queryBusy: false,
+      queryError: null,
+      queryMs: 0,
+      effectiveCallOpacity: data.effectiveCallOpacity,
+      callRenderer: 'canvas2d',
+      gpuModes: new Uint32Array(data.calls.length)
+    };
+    let gpuCallRenderer = null;
+    let gpuCallRendererFailed = false;
+
+    function readThemePreference() {
+      try {
+        const saved = window.localStorage.getItem(themeStorageKey);
+        if (saved === 'system' || saved === 'light' || saved === 'dark') return saved;
+      } catch (_) {
+        // Some file:// and privacy-restricted contexts do not expose storage.
+      }
+      return 'system';
+    }
+
+    function resolveTheme() {
+      if (themePreference === 'light' || themePreference === 'dark') return themePreference;
+      if (systemTheme) return systemTheme.matches ? 'dark' : 'light';
+      return data.initialTheme === 'dark' ? 'dark' : 'light';
+    }
+
+    function applyThemeStyles() {
+      resolvedTheme = resolveTheme();
+      activeTheme = data.themes[resolvedTheme];
+      const palette = activeTheme.palette;
+      const dark = resolvedTheme === 'dark';
+      document.documentElement.style.colorScheme = resolvedTheme;
+      document.documentElement.dataset.themeMode = themePreference;
+      document.documentElement.dataset.themeResolved = resolvedTheme;
+      themeMode.value = themePreference;
+      css.setProperty('--atlas-bg', palette.background);
+      css.setProperty('--atlas-land', palette.land);
+      css.setProperty('--atlas-ink', palette.label);
+      css.setProperty('--atlas-muted', withAlpha(palette.label, dark ? .62 : .68));
+      css.setProperty('--atlas-line', withAlpha(palette.outerBorder, dark ? .42 : .34));
+      css.setProperty('--atlas-panel-solid', dark ? mixRgb(palette.background, palette.land, .46) : mixRgb(palette.background, palette.land, .72));
+      css.setProperty('--atlas-panel', withAlpha(dark ? palette.land : palette.background, .96));
+      css.setProperty('--atlas-source', palette.directionSource);
+      css.setProperty('--atlas-target', palette.directionTarget);
+      css.setProperty('--atlas-focus', dark ? '#f5d76e' : '#9b701c');
+      css.setProperty('--atlas-shadow', dark ? 'rgba(0,0,0,.34)' : 'rgba(48,48,45,.18)');
+    }
+
+    function setThemePreference(preference, persist = true) {
+      if (preference !== 'system' && preference !== 'light' && preference !== 'dark') return;
+      themePreference = preference;
+      if (persist) {
+        try {
+          window.localStorage.setItem(themeStorageKey, preference);
+        } catch (_) {
+          // Theme switching still works for this page when persistence is unavailable.
+        }
+      }
+      applyThemeStyles();
+      scheduleRender();
+    }
+
+    function systemThemeChanged() {
+      if (themePreference === 'system') setThemePreference('system', false);
+    }
+
+    function base64Bytes(encoded) {
+      const binary = atob(encoded);
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+      return bytes;
+    }
+
+    function withAlpha(color, alpha) {
+      if (color.startsWith('rgba(')) return color.replace(/,[^,]+\)$/, `,${alpha})`);
+      return color;
+    }
+
+    function rgbParts(color) {
+      const values = color.match(/[\d.]+/g) || [0, 0, 0];
+      return values.slice(0, 3).map(Number);
+    }
+
+    function mixRgb(a, b, amount) {
+      const left = rgbParts(a);
+      const right = rgbParts(b);
+      const values = left.map((value, index) => Math.round(value + (right[index] - value) * amount));
+      return `rgb(${values.join(',')})`;
+    }
+
+    function tokenizeCallQuery(input) {
+      const tokens = [];
+      let token = '';
+      let quoted = false;
+      let escaped = false;
+      const pushToken = () => {
+        if (token) tokens.push(token);
+        token = '';
+      };
+      for (const character of input) {
+        if (escaped) {
+          token += character;
+          escaped = false;
+        } else if (character === '\\') {
+          escaped = true;
+        } else if (character === '"') {
+          quoted = !quoted;
+        } else if (!quoted && character === '|') {
+          pushToken();
+          tokens.push('|');
+        } else if (!quoted && /\s/.test(character)) {
+          pushToken();
+        } else {
+          token += character;
+        }
+      }
+      if (escaped) token += '\\';
+      if (quoted) throw new Error('Unclosed quote. Add a closing “\"” or remove the opening quote.');
+      pushToken();
+      return tokens;
+    }
+
+    function compileCallQuery(input) {
+      const aliases = { in: 'in', to: 'in', out: 'out', from: 'out', path: 'path', callee: 'callee', analyzer: 'analyzer' };
+      const tokens = tokenizeCallQuery(input.trim());
+      if (!tokens.length) return [];
+      const clauses = [[]];
+      for (let token of tokens) {
+        if (token === '|') {
+          if (!clauses[clauses.length - 1].length) throw new Error('“|” needs a complete filter on both sides. Try in:*delivery* | in:*authoring*.');
+          clauses.push([]);
+          continue;
+        }
+        let negated = false;
+        if (token.startsWith('-')) {
+          negated = true;
+          token = token.slice(1);
+        }
+        if (!token) throw new Error('“-” needs a filter to exclude. Try -in:*deprecated*.');
+        const separator = token.indexOf(':');
+        let field = 'any';
+        let pattern = token;
+        if (separator >= 0) {
+          const requestedField = token.slice(0, separator).toLowerCase();
+          field = aliases[requestedField];
+          if (!field) throw new Error(`Unknown filter “${requestedField}:”. Use in:, out:, path:, callee:, or analyzer:.`);
+          pattern = token.slice(separator + 1);
+        } else if (!pattern.includes('*') && !pattern.includes('?')) {
+          pattern = `*${pattern}*`;
+        }
+        if (!pattern) throw new Error(`Missing a value after “${token.slice(0, separator + 1)}”. Try ${token.slice(0, separator + 1)}*delivery*.`);
+        clauses[clauses.length - 1].push({
+          field,
+          negated,
+          pattern: pattern.toLowerCase().replace(/\*+/g, '*')
+        });
+      }
+      if (!clauses[clauses.length - 1].length) throw new Error('“|” needs a complete filter on both sides. Try in:*delivery* | in:*authoring*.');
+      return clauses;
+    }
+
+    function globMatches(value, pattern) {
+      let valueIndex = 0;
+      let patternIndex = 0;
+      let starIndex = -1;
+      let starValueIndex = -1;
+      while (valueIndex < value.length) {
+        if (patternIndex < pattern.length && (pattern[patternIndex] === '?' || pattern[patternIndex] === value[valueIndex])) {
+          valueIndex++;
+          patternIndex++;
+        } else if (patternIndex < pattern.length && pattern[patternIndex] === '*') {
+          starIndex = patternIndex++;
+          starValueIndex = valueIndex;
+        } else if (starIndex >= 0) {
+          patternIndex = starIndex + 1;
+          valueIndex = ++starValueIndex;
+        } else {
+          return false;
+        }
+      }
+      while (patternIndex < pattern.length && pattern[patternIndex] === '*') patternIndex++;
+      return patternIndex === pattern.length;
+    }
+
+    function termMatchesCall(term, call) {
+      const sourcePath = fileById.get(call.source)?.queryPath || '';
+      const targetPath = fileById.get(call.target)?.queryPath || '';
+      let matched = false;
+      if (term.field === 'in') matched = globMatches(targetPath, term.pattern);
+      else if (term.field === 'out') matched = globMatches(sourcePath, term.pattern);
+      else if (term.field === 'path') matched = globMatches(sourcePath, term.pattern) || globMatches(targetPath, term.pattern);
+      else if (term.field === 'callee') matched = globMatches(call.queryCallee, term.pattern);
+      else if (term.field === 'analyzer') matched = globMatches(call.queryAnalyzer, term.pattern);
+      else matched = globMatches(sourcePath, term.pattern) || globMatches(targetPath, term.pattern) || globMatches(call.queryCallee, term.pattern);
+      return term.negated ? !matched : matched;
+    }
+
+    function compiledQueryMatchesCall(clauses, call) {
+      return !clauses.length || clauses.some(clause => clause.every(term => termMatchesCall(term, call)));
+    }
+
+    function setQueryMessage(message, error = false) {
+      state.queryError = error ? message : null;
+      queryMessage.textContent = message;
+      queryMessage.hidden = !error;
+      queryHelpError.textContent = message;
+      queryHelpError.hidden = !error;
+      queryHelp.classList.toggle('has-error', error);
+      if (error) {
+        callQuery.setAttribute('aria-invalid', 'true');
+        queryHelp.querySelector('summary').title = 'Call filter error — open syntax help';
+      } else {
+        callQuery.removeAttribute('aria-invalid');
+        queryHelp.querySelector('summary').title = 'Call filter help';
+      }
+    }
+
+    function commitCallQuery(raw, mask, matchCount, syncHash, refresh, started) {
+      state.queryText = raw.trim();
+      state.queryMask = mask;
+      state.queryMatchCount = matchCount;
+      state.queryBusy = false;
+      callQuery.removeAttribute('aria-busy');
+      state.queryMs = performance.now() - started;
+      canvas.dataset.queryMs = state.queryMs.toFixed(1);
+      setQueryMessage('');
+      activeQuery.hidden = !state.queryText;
+      activeQueryText.textContent = state.queryText ? `${state.queryText} · ${matchCount.toLocaleString()}` : '';
+      activeQuery.title = state.queryText ? `${matchCount.toLocaleString()} query matches` : '';
+      if (!refresh) return;
+      if (state.hoveredCall && !callMatchesQuery(state.hoveredCall)) state.hoveredCall = null;
+      if (state.selectedCall && !callPassesFilters(state.selectedCall)) state.selectedCall = null;
+      state.page = 0;
+      refreshFilteredCallCount();
+      updateInspector();
+      scheduleRender();
+      if (syncHash) scheduleHashSync();
+    }
+
+    function applyCallQuery(raw, { immediate = false, syncHash = true, updateInput = false, refresh = true } = {}) {
+      if (updateInput) callQuery.value = raw;
+      let clauses;
+      try {
+        clauses = compileCallQuery(raw);
+      } catch (error) {
+        state.queryGeneration++;
+        state.queryBusy = false;
+        callQuery.removeAttribute('aria-busy');
+        setQueryMessage(error.message, true);
+        return false;
+      }
+      const generation = ++state.queryGeneration;
+      const mask = new Uint8Array(data.calls.length);
+      const started = performance.now();
+      let index = 0;
+      let matchCount = 0;
+      const evaluateUntil = deadline => {
+        while (index < data.calls.length && (immediate || performance.now() < deadline)) {
+          if (compiledQueryMatchesCall(clauses, data.calls[index])) {
+            mask[index] = 1;
+            matchCount++;
+          }
+          index++;
+        }
+      };
+      if (!clauses.length) {
+        mask.fill(1);
+        commitCallQuery(raw, mask, data.calls.length, syncHash, refresh, started);
+        return true;
+      }
+      if (immediate || data.calls.length <= 50_000) {
+        evaluateUntil(Infinity);
+        commitCallQuery(raw, mask, matchCount, syncHash, refresh, started);
+      } else {
+        state.queryBusy = true;
+        callQuery.setAttribute('aria-busy', 'true');
+        setQueryMessage('');
+        const evaluateChunk = () => {
+          if (generation !== state.queryGeneration) return;
+          evaluateUntil(performance.now() + 8);
+          if (index < data.calls.length) requestAnimationFrame(evaluateChunk);
+          else commitCallQuery(raw, mask, matchCount, syncHash, refresh, started);
+        };
+        requestAnimationFrame(evaluateChunk);
+      }
+      return true;
+    }
+
+    function rectArea(rect) { return Math.max(0, rect[2] - rect[0]) * Math.max(0, rect[3] - rect[1]); }
+    function rectVisible(rect, visible) { return rect[2] >= visible[0] && rect[0] <= visible[2] && rect[3] >= visible[1] && rect[1] <= visible[3]; }
+    function pointInRect(point, rect) { return point.x >= rect[0] && point.x <= rect[2] && point.y >= rect[1] && point.y <= rect[3]; }
+
+    function pointAt(index) {
+      const offset = index * 4;
+      return {
+        x: pointView.getUint16(offset, true) / 65535 * data.width,
+        y: pointView.getUint16(offset + 2, true) / 65535 * data.height
+      };
+    }
+
+    function pathFor(call) {
+      if (call.path) return call.path;
+      const path = new Path2D();
+      for (let index = 0; index < call.pointCount; index++) {
+        const point = pointAt(call.pointStart + index);
+        if (index === 0) path.moveTo(point.x, point.y); else path.lineTo(point.x, point.y);
+      }
+      call.path = path;
+      return path;
+    }
+
+    function pickCell(point) {
+      const column = Math.max(0, Math.min(pickGridColumns - 1, Math.floor(point.x / data.width * pickGridColumns)));
+      const row = Math.max(0, Math.min(pickGridRows - 1, Math.floor(point.y / data.height * pickGridRows)));
+      return { column, row, index: row * pickGridColumns + column };
+    }
+
+    function addPickSegment(callIndex, segmentIndex, start, end) {
+      const from = pickCell(start);
+      const to = pickCell(end);
+      const steps = Math.max(Math.abs(to.column - from.column), Math.abs(to.row - from.row), 1);
+      const code = callIndex * pickSegmentStride + segmentIndex;
+      let previousCell = -1;
+      let references = 0;
+      for (let step = 0; step <= steps; step++) {
+        const amount = step / steps;
+        const column = Math.round(from.column + (to.column - from.column) * amount);
+        const row = Math.round(from.row + (to.row - from.row) * amount);
+        const cell = row * pickGridColumns + column;
+        if (cell === previousCell) continue;
+        pickGrid[cell].push(code);
+        previousCell = cell;
+        references++;
+      }
+      return references;
+    }
+
+    function buildPickIndex() {
+      const started = performance.now();
+      let references = 0;
+      for (let callIndex = 0; callIndex < data.calls.length; callIndex++) {
+        const call = data.calls[callIndex];
+        let previous = pointAt(call.pointStart);
+        for (let segmentIndex = 0; segmentIndex + 1 < call.pointCount; segmentIndex++) {
+          const current = pointAt(call.pointStart + segmentIndex + 1);
+          references += addPickSegment(callIndex, segmentIndex, previous, current);
+          previous = current;
+        }
+      }
+      pickIndexReady = true;
+      canvas.dataset.pickIndexReady = 'true';
+      canvas.dataset.pickIndexReferences = String(references);
+      canvas.dataset.pickIndexBuildMs = (performance.now() - started).toFixed(1);
+    }
+
+    function resizeCanvas() {
+      const rect = stage.getBoundingClientRect();
+      const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+      const width = Math.max(1, Math.round(rect.width * dpr));
+      const height = Math.max(1, Math.round(rect.height * dpr));
+      const changed = canvas.width !== width || canvas.height !== height;
+      if (changed) {
+        canvas.width = width;
+        canvas.height = height;
+        callCanvas.width = width;
+        callCanvas.height = height;
+      }
+      state.cssWidth = Math.max(1, rect.width);
+      state.cssHeight = Math.max(1, rect.height);
+      state.dpr = dpr;
+      return changed;
+    }
+
+    function calculateFitScale() {
+      const padding = 20;
+      return Math.max(.0001, Math.min((state.cssWidth - padding * 2) / data.width, (state.cssHeight - padding * 2) / data.height));
+    }
+
+    function resetView(syncHash = true) {
+      resizeCanvas();
+      state.fitScale = calculateFitScale();
+      state.scale = state.fitScale;
+      state.x = (state.cssWidth - data.width * state.scale) / 2;
+      state.y = (state.cssHeight - data.height * state.scale) / 2;
+      scheduleRender();
+      if (syncHash) scheduleHashSync();
+    }
+
+    function zoomAt(screenX, screenY, factor) {
+      const oldScale = state.scale;
+      const next = Math.min(state.fitScale * 80, Math.max(state.fitScale * .45, oldScale * factor));
+      const worldX = (screenX - state.x) / oldScale;
+      const worldY = (screenY - state.y) / oldScale;
+      state.scale = next;
+      state.x = screenX - worldX * next;
+      state.y = screenY - worldY * next;
+      scheduleRender();
+      scheduleHashSync();
+    }
+
+    function zoomToFile(file) {
+      const rect = file.rect;
+      const padding = 70;
+      const scale = Math.min((state.cssWidth - padding * 2) / Math.max(1, rect[2] - rect[0]), (state.cssHeight - padding * 2) / Math.max(1, rect[3] - rect[1]));
+      state.scale = Math.min(state.fitScale * 80, Math.max(state.fitScale, scale));
+      state.x = state.cssWidth / 2 - (rect[0] + rect[2]) / 2 * state.scale;
+      state.y = state.cssHeight / 2 - (rect[1] + rect[3]) / 2 * state.scale;
+      scheduleRender();
+      scheduleHashSync();
+    }
+
+    function screenToWorld(clientX, clientY) {
+      const rect = canvas.getBoundingClientRect();
+      return { x: (clientX - rect.left - state.x) / state.scale, y: (clientY - rect.top - state.y) / state.scale };
+    }
+
+    function hitTestFile(point) {
+      for (const file of hitFiles) if (pointInRect(point, file.rect)) return file;
+      return null;
+    }
+
+    function pointSegmentDistanceSquared(point, start, end) {
+      const dx = end.x - start.x;
+      const dy = end.y - start.y;
+      if (dx === 0 && dy === 0) return (point.x - start.x) ** 2 + (point.y - start.y) ** 2;
+      const amount = Math.max(0, Math.min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / (dx * dx + dy * dy)));
+      const x = start.x + dx * amount;
+      const y = start.y + dy * amount;
+      return (point.x - x) ** 2 + (point.y - y) ** 2;
+    }
+
+    function hitTestCall(point) {
+      if (!showCalls.checked || !pickIndexReady) return null;
+      const tolerance = Math.max(6, data.callWidth * 2.5) / Math.max(state.scale, .0001);
+      let bestCall = null;
+      let bestDistanceSquared = tolerance * tolerance;
+      let candidates = 0;
+      const started = performance.now();
+      const center = pickCell(point);
+      const columnRadius = Math.max(1, Math.ceil(tolerance / (data.width / pickGridColumns)));
+      const rowRadius = Math.max(1, Math.ceil(tolerance / (data.height / pickGridRows)));
+      pickGeneration = (pickGeneration + 1) >>> 0;
+      if (pickGeneration === 0) {
+        pickSeen.fill(0);
+        pickGeneration = 1;
+      }
+      for (let row = Math.max(0, center.row - rowRadius); row <= Math.min(pickGridRows - 1, center.row + rowRadius); row++) {
+        for (let column = Math.max(0, center.column - columnRadius); column <= Math.min(pickGridColumns - 1, center.column + columnRadius); column++) {
+          for (const segmentCode of pickGrid[row * pickGridColumns + column]) {
+            if (pickSeen[segmentCode] === pickGeneration) continue;
+            pickSeen[segmentCode] = pickGeneration;
+            const callIndex = Math.floor(segmentCode / pickSegmentStride);
+            const segmentIndex = segmentCode - callIndex * pickSegmentStride;
+            const call = data.calls[callIndex];
+            if (!callPassesFilters(call)) continue;
+            candidates++;
+            const distanceSquared = pointSegmentDistanceSquared(
+              point,
+              pointAt(call.pointStart + segmentIndex),
+              pointAt(call.pointStart + segmentIndex + 1)
+            );
+            if (distanceSquared <= bestDistanceSquared) {
+              bestDistanceSquared = distanceSquared;
+              bestCall = call;
+            }
+          }
+        }
+      }
+      canvas.dataset.pickCandidates = String(candidates);
+      canvas.dataset.pickMs = (performance.now() - started).toFixed(1);
+      return bestCall;
+    }
+
+    function visibleWorld() {
+      return [
+        -state.x / state.scale,
+        -state.y / state.scale,
+        (state.cssWidth - state.x) / state.scale,
+        (state.cssHeight - state.y) / state.scale
+      ];
+    }
+
+    function currentViewState() {
+      return {
+        zoom: state.scale / Math.max(state.fitScale, .0001),
+        centerX: (state.cssWidth / 2 - state.x) / state.scale,
+        centerY: (state.cssHeight / 2 - state.y) / state.scale
+      };
+    }
+
+    function finiteNumber(value) {
+      if (value === null || value === '') return null;
+      const number = Number(value);
+      return Number.isFinite(number) ? number : null;
+    }
+
+    function syncHashNow() {
+      state.hashSyncTimer = null;
+      if (state.applyingHash) return;
+      const params = new URLSearchParams();
+      if (state.selectedFile) params.set('file', state.selectedFile.path);
+      if (state.selectedCall) params.set('call', String(state.selectedCall.id));
+      if (callMode.value !== 'all') params.set('mode', callMode.value);
+      if (state.queryText) params.set('q', state.queryText);
+      if (!showCalls.checked) params.set('calls', '0');
+      if (!showLabels.checked) params.set('labels', '0');
+      const view = currentViewState();
+      params.set('z', view.zoom.toFixed(4));
+      params.set('x', (view.centerX / data.width).toFixed(6));
+      params.set('y', (view.centerY / data.height).toFixed(6));
+      const nextHash = `#${params.toString()}`;
+      if (window.location.hash !== nextHash) history.replaceState(null, '', nextHash);
+    }
+
+    function scheduleHashSync() {
+      if (state.applyingHash) return;
+      if (state.hashSyncTimer !== null) clearTimeout(state.hashSyncTimer);
+      state.hashSyncTimer = setTimeout(syncHashNow, 90);
+    }
+
+    function applyHashState() {
+      state.applyingHash = true;
+      const params = new URLSearchParams(window.location.hash.slice(1));
+      const mode = params.get('mode');
+      callMode.value = ['all', 'connected', 'incoming', 'outgoing'].includes(mode) ? mode : 'all';
+      showCalls.checked = params.get('calls') !== '0';
+      showLabels.checked = params.get('labels') !== '0';
+      applyCallQuery(params.get('q') || '', { immediate: true, syncHash: false, updateInput: true, refresh: false });
+
+      const requestedFile = fileByPath.get(params.get('file')) || null;
+      const requestedCall = callById.get(params.get('call')) || null;
+      state.selectedCall = requestedCall;
+      state.selectedFile = requestedFile;
+      if (requestedCall && (!state.selectedFile || (requestedCall.source !== state.selectedFile.id && requestedCall.target !== state.selectedFile.id))) {
+        state.selectedFile = fileById.get(requestedCall.source) || null;
+      }
+      if (!state.selectedFile && callMode.value !== 'all') callMode.value = 'all';
+      if (state.selectedCall && !callPassesFilters(state.selectedCall)) state.selectedCall = null;
+      refreshFilteredCallCount();
+      state.page = 0;
+      if (state.selectedCall && state.selectedFile) {
+        const index = incidentCalls().indexOf(state.selectedCall);
+        if (index >= 0) state.page = Math.floor(index / pageSize);
+      }
+
+      const zoom = finiteNumber(params.get('z'));
+      const normalizedX = finiteNumber(params.get('x'));
+      const normalizedY = finiteNumber(params.get('y'));
+      if (zoom !== null && normalizedX !== null && normalizedY !== null) {
+        state.scale = Math.min(state.fitScale * 80, Math.max(state.fitScale * .45, state.fitScale * zoom));
+        const centerX = normalizedX * data.width;
+        const centerY = normalizedY * data.height;
+        state.x = state.cssWidth / 2 - centerX * state.scale;
+        state.y = state.cssHeight / 2 - centerY * state.scale;
+      }
+      updateInspector();
+      state.applyingHash = false;
+      scheduleRender();
+    }
+
+    function preserveViewOnResize() {
+      const previous = currentViewState();
+      resizeCanvas();
+      state.fitScale = calculateFitScale();
+      state.scale = Math.min(state.fitScale * 80, Math.max(state.fitScale * .45, state.fitScale * previous.zoom));
+      state.x = state.cssWidth / 2 - previous.centerX * state.scale;
+      state.y = state.cssHeight / 2 - previous.centerY * state.scale;
+      scheduleRender();
+      scheduleHashSync();
+    }
+
+    function callMatchesQuery(call) {
+      return state.queryMask[call.index] === 1;
+    }
+
+    function callPassesFilters(call) {
+      if (!callMatchesQuery(call)) return false;
+      if (!state.selectedFile || callMode.value === 'all') return callMode.value === 'all';
+      const id = state.selectedFile.id;
+      if (callMode.value === 'connected') return call.source === id || call.target === id;
+      if (callMode.value === 'incoming') return call.target === id;
+      if (callMode.value === 'outgoing') return call.source === id;
+      return true;
+    }
+
+    function refreshFilteredCallCount() {
+      let count = 0;
+      for (const call of data.calls) if (callPassesFilters(call)) count++;
+      state.filteredCallCount = count;
+    }
+
+    function adaptiveCallOpacity(callCount) {
+      const baseOpacity = Math.max(0, Number(data.callOpacity ?? data.effectiveCallOpacity));
+      if (callCount <= 0 || baseOpacity === 0) return 0;
+      if (!data.densityAwareExposure) return baseOpacity;
+      const referenceCalls = Math.max(1, Number(data.densityReferenceCalls || 2500));
+      const activeCalls = Math.max(1, callCount);
+      const exposureScale = Math.sqrt(referenceCalls / activeCalls);
+      return Math.round(Math.max(2, Math.min(160, baseOpacity * exposureScale)));
+    }
+
+    function currentCallAlpha(visibleCallCount) {
+      state.visibleCallCount = visibleCallCount;
+      state.effectiveCallOpacity = adaptiveCallOpacity(visibleCallCount);
+      return Math.max(.012, state.effectiveCallOpacity / 255);
+    }
+
+    function drawCall(call, alpha, widthScale) {
+      const start = pointAt(call.pointStart);
+      const end = pointAt(call.pointStart + call.pointCount - 1);
+      const gradient = ctx.createLinearGradient(start.x, start.y, end.x, end.y);
+      gradient.addColorStop(0, withAlpha(activeTheme.palette.directionSource, alpha));
+      gradient.addColorStop(1, withAlpha(activeTheme.palette.directionTarget, alpha));
+      ctx.strokeStyle = gradient;
+      ctx.lineWidth = data.callWidth * widthScale;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.stroke(pathFor(call));
+    }
+
+    function disableWebGpuCallRenderer(error) {
+      if (gpuCallRendererFailed) return;
+      gpuCallRendererFailed = true;
+      if (gpuCallRenderer) gpuCallRenderer.destroy();
+      gpuCallRenderer = null;
+      state.callRenderer = 'canvas2d';
+      callCanvas.hidden = true;
+      callCanvas.dataset.renderer = 'canvas2d-fallback';
+      callCanvas.dataset.error = error ? String(error.message || error) : 'WebGPU unavailable';
+      scheduleRender();
+    }
+
+    function callRenderMode(call, visible) {
+      if (!visible) return 0;
+      if (call === state.selectedCall || call === state.hoveredCall) return 3;
+      if (state.selectedFile && callMode.value === 'all') {
+        const id = state.selectedFile.id;
+        if (callMatchesQuery(call) && (call.source === id || call.target === id)) return 2;
+      }
+      return 1;
+    }
+
+    function drawWebGpuCalls(visible) {
+      let drawnCalls = 0;
+      state.gpuModes.fill(0);
+      if (showCalls.checked) {
+        for (const call of data.calls) {
+          const shown = callPassesFilters(call) && rectVisible(call.worldBounds, visible);
+          if (shown) drawnCalls++;
+          state.gpuModes[call.index] = callRenderMode(call, shown);
+        }
+        const emphasizedCall = state.selectedCall || state.hoveredCall;
+        if (emphasizedCall) state.gpuModes[emphasizedCall.index] = 3;
+      }
+      const alpha = currentCallAlpha(drawnCalls);
+      callCanvas.hidden = !showCalls.checked;
+      gpuCallRenderer.render({
+        width: callCanvas.width,
+        height: callCanvas.height,
+        dpr: state.dpr,
+        scale: state.scale,
+        x: state.x,
+        y: state.y,
+        source: rgbParts(activeTheme.palette.directionSource),
+        target: rgbParts(activeTheme.palette.directionTarget),
+        alpha,
+        callWidth: data.callWidth,
+        modes: state.gpuModes
+      });
+      return drawnCalls;
+    }
+
+    function drawScene() {
+      const renderStarted = performance.now();
+      state.renderQueued = false;
+      resizeCanvas();
+      const dpr = state.dpr;
+      const visible = visibleWorld();
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = activeTheme.palette.background;
+      ctx.fillRect(0, 0, state.cssWidth, state.cssHeight);
+      ctx.setTransform(dpr * state.scale, 0, 0, dpr * state.scale, dpr * state.x, dpr * state.y);
+      ctx.fillStyle = activeTheme.palette.land;
+      ctx.fillRect(0, 0, data.width, data.height);
+
+      if (state.scale <= state.fitScale * 5) {
+        let random = Number(data.textureSeed % 2147483647) || 1;
+        ctx.strokeStyle = activeTheme.palette.paperFiber;
+        ctx.lineWidth = .45 / Math.max(state.scale, state.fitScale);
+        ctx.beginPath();
+        for (let index = 0; index < 420; index++) {
+          random = random * 48271 % 2147483647;
+          const x = random / 2147483647 * data.width;
+          random = random * 48271 % 2147483647;
+          const y = random / 2147483647 * data.height;
+          random = random * 48271 % 2147483647;
+          const length = 5 + random / 2147483647 * 25;
+          ctx.moveTo(x, y);
+          ctx.lineTo(x + length, y + length * .08);
+        }
+        ctx.stroke();
+      }
+
+      for (const file of data.files) {
+        if (!rectVisible(file.rect, visible)) continue;
+        ctx.fillStyle = activeTheme.fileFills[file.index];
+        ctx.fillRect(file.rect[0], file.rect[1], file.rect[2] - file.rect[0], file.rect[3] - file.rect[1]);
+      }
+
+      let drawnCalls = 0;
+      if (gpuCallRenderer) {
+        try {
+          drawnCalls = drawWebGpuCalls(visible);
+        } catch (error) {
+          disableWebGpuCallRenderer(error);
+        }
+      } else if (showCalls.checked) {
+        callCanvas.hidden = true;
+        const visibleCalls = data.calls.filter(call =>
+          callPassesFilters(call) && rectVisible(call.worldBounds, visible)
+        );
+        const alpha = currentCallAlpha(visibleCalls.length);
+        for (const call of visibleCalls) {
+          drawCall(call, alpha, 1);
+          drawnCalls++;
+        }
+        if (state.selectedFile && callMode.value === 'all') {
+          const id = state.selectedFile.id;
+          for (const call of data.calls) {
+            if (!callMatchesQuery(call) || (call.source !== id && call.target !== id) || !rectVisible(call.worldBounds, visible)) continue;
+            drawCall(call, Math.max(.26, alpha * 4), 1.35);
+          }
+        }
+        const emphasizedCall = state.selectedCall || state.hoveredCall;
+        if (emphasizedCall) drawCall(emphasizedCall, .96, 2.4);
+      } else {
+        currentCallAlpha(0);
+      }
+      state.drawnCalls = drawnCalls;
+
+      const pixelLine = 1 / Math.max(state.scale, .0001);
+      for (const file of data.files) {
+        if (!rectVisible(file.rect, visible)) continue;
+        ctx.strokeStyle = activeTheme.palette.fileBorder;
+        ctx.lineWidth = pixelLine;
+        ctx.strokeRect(file.rect[0], file.rect[1], file.rect[2] - file.rect[0], file.rect[3] - file.rect[1]);
+      }
+      const directories = [...data.directories].sort((a, b) => b.depth - a.depth);
+      for (const directory of directories) {
+        if (directory.depth === 0 || !rectVisible(directory.rect, visible)) continue;
+        ctx.strokeStyle = activeTheme.palette.directoryBorder;
+        ctx.lineWidth = pixelLine * Math.max(1.2, 3.2 - directory.depth * .32);
+        ctx.strokeRect(directory.rect[0], directory.rect[1], directory.rect[2] - directory.rect[0], directory.rect[3] - directory.rect[1]);
+      }
+      ctx.strokeStyle = activeTheme.palette.outerBorder;
+      ctx.lineWidth = pixelLine * 2;
+      ctx.strokeRect(0, 0, data.width, data.height);
+
+      if (showLabels.checked) {
+        ctx.textBaseline = 'alphabetic';
+        for (const label of data.labels) {
+          if (label.x < visible[0] - 300 || label.x > visible[2] + 300 || label.y < visible[1] - 80 || label.y > visible[3] + 80) continue;
+          ctx.fillStyle = activeTheme.labelColors[label.index];
+          ctx.font = `${label.size}px ui-monospace, SFMono-Regular, Menlo, Monaco, monospace`;
+          if (label.placement === 'vertical') {
+            ctx.save();
+            ctx.translate(label.x, label.y);
+            ctx.rotate(Math.PI / 2);
+            ctx.fillText(label.text, 0, 0);
+            ctx.restore();
+          } else if (label.placement === 'signature') {
+            ctx.fillText(`♡ ${label.text}`, label.x, label.y);
+          } else {
+            ctx.fillText(label.text, label.x, label.y);
+          }
+        }
+      }
+
+      if (state.hoveredFile || state.selectedFile) {
+        const selected = state.selectedFile || state.hoveredFile;
+        ctx.strokeStyle = state.selectedFile
+          ? (resolvedTheme === 'dark' ? 'rgba(245,215,110,.95)' : 'rgba(155,112,28,.95)')
+          : withAlpha(activeTheme.palette.label, .82);
+        ctx.lineWidth = pixelLine * (state.selectedFile ? 2.4 : 1.5);
+        ctx.strokeRect(selected.rect[0], selected.rect[1], selected.rect[2] - selected.rect[0], selected.rect[3] - selected.rect[1]);
+      }
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const renderMs = performance.now() - renderStarted;
+      canvas.dataset.renderMs = renderMs.toFixed(1);
+      canvas.dataset.drawnCalls = String(drawnCalls);
+      canvas.dataset.visibleCalls = String(state.visibleCallCount);
+      canvas.dataset.callOpacity = String(state.effectiveCallOpacity);
+      canvas.dataset.callRenderer = state.callRenderer;
+      let visibility = 'calls hidden';
+      if (showCalls.checked) {
+        visibility = drawnCalls === state.filteredCallCount
+          ? `${drawnCalls.toLocaleString()} calls`
+          : `${drawnCalls.toLocaleString()} / ${state.filteredCallCount.toLocaleString()} calls`;
+      }
+      const rendererLabel = state.callRenderer === 'webgpu-optical-density' ? 'WebGPU' : 'Canvas';
+      status.textContent = `${Math.round(state.scale / state.fitScale * 100)}% · ${visibility} · ${rendererLabel} · ${Math.round(renderMs)} ms`;
+      status.title = `${state.queryMatchCount.toLocaleString()} query matches · ${state.visibleCallCount.toLocaleString()} visible · ${data.calls.length.toLocaleString()} total calls · exposure ${state.effectiveCallOpacity}/255`;
+    }
+
+    function scheduleRender() {
+      if (state.renderQueued) return;
+      state.renderQueued = true;
+      requestAnimationFrame(drawScene);
+    }
+
+    function endpointText(file, line) {
+      const path = file ? file.path : 'unknown file';
+      return `${path}\n${line == null ? 'line unavailable' : `line ${line}`}`;
+    }
+
+    function sourceUrl(file, line) {
+      if (!data.sourceUrlTemplate || !file || line == null) return null;
+      const replacements = {
+        revision: encodeURIComponent(data.revision),
+        path: file.path.split('/').map(encodeURIComponent).join('/'),
+        line: encodeURIComponent(String(line))
+      };
+      let url = data.sourceUrlTemplate;
+      for (const [name, value] of Object.entries(replacements)) url = url.split(`{${name}}`).join(value);
+      return url;
+    }
+
+    function updateEndpointLink(element, file, line) {
+      element.textContent = endpointText(file, line);
+      const url = sourceUrl(file, line);
+      if (url) {
+        element.href = url;
+        element.title = `Open ${file.path} at line ${line}`;
+        element.setAttribute('aria-label', element.title);
+      } else {
+        element.removeAttribute('href');
+        element.removeAttribute('title');
+        element.removeAttribute('aria-label');
+      }
+    }
+
+    function fallbackCopyText(text) {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.append(textarea);
+      textarea.select();
+      const copied = document.execCommand('copy');
+      textarea.remove();
+      return copied;
+    }
+
+    async function copyViewLink() {
+      syncHashNow();
+      const link = window.location.href;
+      let copied = false;
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(link);
+          copied = true;
+        }
+      } catch (_) {
+        copied = false;
+      }
+      if (!copied) copied = fallbackCopyText(link);
+      copyLinkButton.textContent = copied ? 'Copied' : 'Copy failed';
+      copyLinkButton.classList.toggle('is-copied', copied);
+      window.setTimeout(() => {
+        copyLinkButton.textContent = 'Copy link';
+        copyLinkButton.classList.remove('is-copied');
+      }, 1_500);
+    }
+
+    function updateTooltip(event, file, call) {
+      if ((!file && !call) || state.dragging) {
+        tooltip.style.display = 'none';
+        return;
+      }
+      tooltip.replaceChildren();
+      const strong = document.createElement('strong');
+      const detail = document.createElement('span');
+      if (call) {
+        strong.textContent = `${endpointText(fileById.get(call.source), call.sourceLine)} → ${endpointText(fileById.get(call.target), call.targetLine)}`;
+        detail.textContent = `${call.callee} · ${call.analyzer} · ${Math.round(call.confidence * 100)}%`;
+      } else {
+        strong.textContent = file.path;
+        detail.textContent = `${file.language} · ${file.loc.toLocaleString()} lines · ${file.outgoing.toLocaleString()} out / ${file.incoming.toLocaleString()} in`;
+      }
+      tooltip.append(strong, detail);
+      tooltip.style.display = 'block';
+      const stageRect = stage.getBoundingClientRect();
+      const left = Math.min(stageRect.width - tooltip.offsetWidth - 10, Math.max(10, event.clientX - stageRect.left + 14));
+      const top = Math.min(stageRect.height - tooltip.offsetHeight - 10, Math.max(10, event.clientY - stageRect.top + 14));
+      tooltip.style.left = `${left}px`;
+      tooltip.style.top = `${top}px`;
+    }
+
+    function selectFile(file, zoom = false) {
+      state.selectedFile = file;
+      state.hoveredCall = null;
+      state.selectedCall = null;
+      state.page = 0;
+      if (!file && callMode.value !== 'all') callMode.value = 'all';
+      refreshFilteredCallCount();
+      if (file && zoom) zoomToFile(file);
+      updateInspector();
+      scheduleRender();
+      scheduleHashSync();
+    }
+
+    function selectCall(call, anchorFile = null) {
+      state.hoveredCall = null;
+      state.selectedCall = state.selectedCall === call ? null : call;
+      if (state.selectedCall) {
+        const currentFileIsEndpoint = state.selectedFile && (call.source === state.selectedFile.id || call.target === state.selectedFile.id);
+        state.selectedFile = currentFileIsEndpoint ? state.selectedFile : (anchorFile || fileById.get(call.source) || null);
+        const index = incidentCalls().indexOf(call);
+        state.page = index >= 0 ? Math.floor(index / pageSize) : 0;
+      }
+      refreshFilteredCallCount();
+      updateInspector();
+      scheduleRender();
+      scheduleHashSync();
+    }
+
+    function incidentCalls() {
+      if (!state.selectedFile) return [];
+      const id = state.selectedFile.id;
+      return data.calls.filter(call => (call.source === id || call.target === id) && callPassesFilters(call));
+    }
+
+    function updateInspector() {
+      const file = state.selectedFile;
+      const selectedCall = state.selectedCall;
+      callScope.hidden = !file;
+      callMode.disabled = !file;
+      callMode.title = file
+        ? 'Limit calls relative to the selected file'
+        : 'Select a file before using Connected, Incoming, or Outgoing';
+      const selectedCallDetails = document.getElementById('atlas-selected-call');
+      document.getElementById('atlas-empty').hidden = Boolean(file || selectedCall);
+      selectedCallDetails.hidden = !selectedCall;
+      if (selectedCall) {
+        const source = fileById.get(selectedCall.source);
+        const target = fileById.get(selectedCall.target);
+        updateEndpointLink(document.getElementById('atlas-call-source'), source, selectedCall.sourceLine);
+        updateEndpointLink(document.getElementById('atlas-call-target'), target, selectedCall.targetLine);
+        document.getElementById('atlas-selected-call-meta').textContent = `${selectedCall.callee} · ${selectedCall.analyzer} · ${Math.round(selectedCall.confidence * 100)}% confidence`;
+      } else {
+        updateEndpointLink(document.getElementById('atlas-call-source'), null, null);
+        updateEndpointLink(document.getElementById('atlas-call-target'), null, null);
+      }
+      document.getElementById('atlas-file-details').hidden = !file;
+      if (!file) {
+        callList.replaceChildren();
+        document.getElementById('atlas-call-count').textContent = '';
+        pageLabel.textContent = 'No file selected';
+        pagePrev.disabled = true;
+        pageNext.disabled = true;
+        if (callMode.value !== 'all') {
+          callMode.value = 'all';
+          refreshFilteredCallCount();
+        }
+        scheduleRender();
+        return;
+      }
+      document.getElementById('atlas-file-path').textContent = file.path;
+      document.getElementById('atlas-file-language').textContent = file.language;
+      document.getElementById('atlas-file-loc').textContent = file.loc.toLocaleString();
+      document.getElementById('atlas-file-commits').textContent = file.commits.toLocaleString();
+      document.getElementById('atlas-file-bytes').textContent = formatBytes(file.bytes);
+      document.getElementById('atlas-file-outgoing').textContent = file.outgoing.toLocaleString();
+      document.getElementById('atlas-file-incoming').textContent = file.incoming.toLocaleString();
+      const calls = incidentCalls();
+      const pages = Math.max(1, Math.ceil(calls.length / pageSize));
+      state.page = Math.min(state.page, pages - 1);
+      document.getElementById('atlas-call-count').textContent = calls.length.toLocaleString();
+      pageLabel.textContent = calls.length ? `${state.page + 1} / ${pages}` : 'No connected calls';
+      pagePrev.disabled = state.page === 0;
+      pageNext.disabled = state.page + 1 >= pages;
+      callList.replaceChildren();
+      for (const call of calls.slice(state.page * pageSize, (state.page + 1) * pageSize)) {
+        const outgoing = call.source === file.id;
+        const peer = fileById.get(outgoing ? call.target : call.source);
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = `atlas-call-item ${outgoing ? 'outgoing' : 'incoming'}`;
+        const title = document.createElement('strong');
+        title.textContent = `${outgoing ? '→' : '←'} ${peer ? peer.path : 'unknown file'}`;
+        const details = document.createElement('span');
+        const line = outgoing ? call.sourceLine : (call.targetLine || '?');
+        details.textContent = `line ${line} · ${call.callee} · ${call.analyzer} · ${Math.round(call.confidence * 100)}%`;
+        button.append(title, details);
+        button.classList.toggle('is-active', state.selectedCall === call);
+        button.addEventListener('mouseenter', () => { state.hoveredCall = call; scheduleRender(); });
+        button.addEventListener('mouseleave', () => { if (state.hoveredCall === call) state.hoveredCall = null; scheduleRender(); });
+        button.addEventListener('click', () => selectCall(call, file));
+        callList.append(button);
+      }
+    }
+
+    function formatBytes(value) {
+      if (value < 1024) return `${value} B`;
+      const units = ['KiB', 'MiB', 'GiB'];
+      let amount = value / 1024;
+      let unit = 0;
+      while (amount >= 1024 && unit + 1 < units.length) { amount /= 1024; unit++; }
+      return `${amount.toFixed(amount >= 10 ? 0 : 1)} ${units[unit]}`;
+    }
+
+    canvas.addEventListener('pointerdown', event => {
+      if (event.button !== 0) return;
+      state.pointerDown = true;
+      state.dragging = false;
+      state.pointerStartX = event.clientX;
+      state.pointerStartY = event.clientY;
+      state.viewStartX = state.x;
+      state.viewStartY = state.y;
+      const world = screenToWorld(event.clientX, event.clientY);
+      state.pointerCall = hitTestCall(world);
+      state.pointerFile = hitTestFile(world);
+      canvas.setPointerCapture(event.pointerId);
+    });
+    canvas.addEventListener('pointermove', event => {
+      if (state.pointerDown) {
+        const dx = event.clientX - state.pointerStartX;
+        const dy = event.clientY - state.pointerStartY;
+        if (Math.hypot(dx, dy) > 3) state.dragging = true;
+        if (state.dragging) {
+          state.x = state.viewStartX + dx;
+          state.y = state.viewStartY + dy;
+          canvas.classList.add('is-panning');
+          tooltip.style.display = 'none';
+          scheduleRender();
+          scheduleHashSync();
+        }
+        return;
+      }
+      const world = screenToWorld(event.clientX, event.clientY);
+      const call = hitTestCall(world);
+      const file = hitTestFile(world);
+      if (file !== state.hoveredFile || call !== state.hoveredCall) {
+        state.hoveredFile = file;
+        state.hoveredCall = call;
+        canvas.classList.toggle('has-file', Boolean(file));
+        canvas.classList.toggle('has-call', Boolean(call));
+        scheduleRender();
+      }
+      updateTooltip(event, file, call);
+    });
+    canvas.addEventListener('pointerup', event => {
+      if (!state.pointerDown) return;
+      canvas.releasePointerCapture(event.pointerId);
+      state.pointerDown = false;
+      canvas.classList.remove('is-panning');
+      if (!state.dragging) {
+        const call = state.pointerCall;
+        if (call) selectCall(call);
+        else selectFile(state.pointerFile);
+      }
+      state.pointerCall = null;
+      state.pointerFile = null;
+      state.dragging = false;
+    });
+    canvas.addEventListener('pointerleave', () => {
+      if (!state.pointerDown) {
+        state.hoveredFile = null;
+        state.hoveredCall = null;
+        canvas.classList.remove('has-file');
+        canvas.classList.remove('has-call');
+        tooltip.style.display = 'none';
+        scheduleRender();
+      }
+    });
+    canvas.addEventListener('dblclick', event => {
+      const world = screenToWorld(event.clientX, event.clientY);
+      const call = hitTestCall(world);
+      if (call) selectCall(call);
+      else {
+        const file = hitTestFile(world);
+        if (file) { selectFile(file); zoomToFile(file); }
+      }
+    });
+    canvas.addEventListener('wheel', event => {
+      event.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      zoomAt(event.clientX - rect.left, event.clientY - rect.top, Math.exp(-event.deltaY * .0013));
+    }, { passive: false });
+
+    document.getElementById('atlas-zoom-in').addEventListener('click', () => zoomAt(state.cssWidth / 2, state.cssHeight / 2, 1.35));
+    document.getElementById('atlas-zoom-out').addEventListener('click', () => zoomAt(state.cssWidth / 2, state.cssHeight / 2, 1 / 1.35));
+    document.getElementById('atlas-reset').addEventListener('click', resetView);
+    copyLinkButton.addEventListener('click', copyViewLink);
+    showCalls.addEventListener('change', () => { scheduleRender(); scheduleHashSync(); });
+    showLabels.addEventListener('change', () => { scheduleRender(); scheduleHashSync(); });
+    themeMode.addEventListener('change', () => setThemePreference(themeMode.value));
+    if (systemTheme) {
+      if (typeof systemTheme.addEventListener === 'function') {
+        systemTheme.addEventListener('change', systemThemeChanged);
+      } else if (typeof systemTheme.addListener === 'function') {
+        systemTheme.addListener(systemThemeChanged);
+      }
+    }
+    callMode.addEventListener('change', () => {
+      if (!state.selectedFile && callMode.value !== 'all') callMode.value = 'all';
+      if (state.selectedCall && !callPassesFilters(state.selectedCall)) state.selectedCall = null;
+      state.page = 0;
+      refreshFilteredCallCount();
+      updateInspector();
+      scheduleRender();
+      scheduleHashSync();
+    });
+    callQuery.addEventListener('input', () => {
+      if (state.queryTimer !== null) clearTimeout(state.queryTimer);
+      state.queryTimer = setTimeout(() => {
+        state.queryTimer = null;
+        applyCallQuery(callQuery.value);
+      }, 160);
+    });
+    function clearCallQuery(focus = false) {
+      if (state.queryTimer !== null) clearTimeout(state.queryTimer);
+      state.queryTimer = null;
+      callQuery.value = '';
+      applyCallQuery('', { immediate: true });
+      if (focus) callQuery.focus();
+    }
+    callQuery.addEventListener('keydown', event => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      if (queryHelp.open) {
+        queryHelp.open = false;
+        return;
+      }
+      clearCallQuery(true);
+    });
+    queryClear.addEventListener('click', () => clearCallQuery(true));
+    activeQueryClear.addEventListener('click', () => clearCallQuery());
+    queryHelp.addEventListener('toggle', () => {
+      queryMessage.classList.toggle('is-obscured', queryHelp.open);
+    });
+    for (const example of document.querySelectorAll('.atlas-query-example')) {
+      example.addEventListener('click', () => {
+        if (state.queryTimer !== null) clearTimeout(state.queryTimer);
+        state.queryTimer = null;
+        callQuery.value = example.dataset.query;
+        queryHelp.open = false;
+        applyCallQuery(callQuery.value, { immediate: true });
+        callQuery.focus();
+      });
+    }
+    document.addEventListener('pointerdown', event => {
+      if (queryHelp.open && !queryHelp.contains(event.target)) queryHelp.open = false;
+      if (layers.open && !layers.contains(event.target)) layers.open = false;
+    });
+    pagePrev.addEventListener('click', () => { state.page = Math.max(0, state.page - 1); updateInspector(); });
+    pageNext.addEventListener('click', () => { state.page++; updateInspector(); });
+    document.getElementById('atlas-search').addEventListener('submit', event => {
+      event.preventDefault();
+      const query = document.getElementById('atlas-search-input').value.trim().toLowerCase();
+      if (!query) return;
+      const exact = data.files.find(file => file.path.toLowerCase() === query);
+      const match = exact || data.files.find(file => file.path.toLowerCase().includes(query));
+      if (match) selectFile(match, true);
+      else status.textContent = `No file path contains “${query}”`;
+    });
+    window.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && queryHelp.open) {
+        queryHelp.open = false;
+        return;
+      }
+      if (event.key === 'Escape' && layers.open) {
+        layers.open = false;
+        return;
+      }
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
+      if (event.key === 'Escape') selectFile(null);
+      else if (event.key === '0') resetView();
+      else if (event.key === '+' || event.key === '=') zoomAt(state.cssWidth / 2, state.cssHeight / 2, 1.35);
+      else if (event.key === '-') zoomAt(state.cssWidth / 2, state.cssHeight / 2, 1 / 1.35);
+    });
+    window.addEventListener('hashchange', applyHashState);
+
+    let viewInitialized = false;
+    const observer = new ResizeObserver(() => { if (viewInitialized) preserveViewOnResize(); });
+    observer.observe(stage);
+    createWebGpuCallRenderer(callCanvas, data, rawPoints, disableWebGpuCallRenderer)
+      .then(renderer => {
+        if (!renderer) {
+          disableWebGpuCallRenderer();
+          return;
+        }
+        gpuCallRenderer = renderer;
+        state.callRenderer = 'webgpu-optical-density';
+        callCanvas.dataset.renderer = state.callRenderer;
+        callCanvas.hidden = !showCalls.checked;
+        scheduleRender();
+      })
+      .catch(disableWebGpuCallRenderer);
+    requestAnimationFrame(() => {
+      resetView(false);
+      applyHashState();
+      viewInitialized = true;
+      scheduleHashSync();
+      requestAnimationFrame(() => setTimeout(buildPickIndex, 0));
+    });
+    window.__codeAtlas = {
+      data,
+      state,
+      selectFile: id => selectFile(fileById.get(id) || null),
+      selectCall: id => selectCall(callById.get(String(id)) || null),
+      applyCallQuery: query => applyCallQuery(String(query), { immediate: true }),
+      setThemePreference,
+      compileCallQuery,
+      queryMatchesCall: id => {
+        const call = callById.get(String(id));
+        return Boolean(call && callMatchesQuery(call));
+      },
+      hitTestCall,
+      resetView,
+      renderNow: drawScene,
+      callCount: data.calls.length
+    };
+  })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,29 @@
+[advisories]
+yanked = "deny"
+# fontdue 0.9.4 depends on ttf-parser 0.25.1. RUSTSEC-2026-0192 marks
+# ttf-parser unmaintained but reports no vulnerability and offers no safe
+# upgrade. Keep the exception explicit until fontdue migrates or is replaced.
+ignore = ["RUSTSEC-2026-0192"]
+
+[licenses]
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

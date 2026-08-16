@@ -1,0 +1,10 @@
+/target/
+/.code-atlas/
+/output/
+*.png
+*.tiff
+*.exr
+*.catile
+*.pdf
+*.report.json
+.DS_Store
