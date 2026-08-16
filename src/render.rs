@@ -692,11 +692,7 @@ impl OpticalDensityLayer {
     fn resolve(self) -> Result<Pixmap> {
         let mut pixmap = Pixmap::new(self.width, self.height)
             .context("optical-density call tile dimensions are too large")?;
-        for (output, density) in pixmap
-            .data_mut()
-            .chunks_exact_mut(4)
-            .zip(self.pixels.into_iter())
-        {
+        for (output, density) in pixmap.data_mut().chunks_exact_mut(4).zip(self.pixels) {
             if density.density <= f32::EPSILON {
                 continue;
             }
