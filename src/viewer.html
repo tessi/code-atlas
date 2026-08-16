@@ -1344,7 +1344,7 @@
       const detail = document.createElement('span');
       if (call) {
         strong.textContent = `${endpointText(fileById.get(call.source), call.sourceLine)} → ${endpointText(fileById.get(call.target), call.targetLine)}`;
-        detail.textContent = `${call.callee} · ${call.analyzer} · ${Math.round(call.confidence * 100)}%`;
+        detail.textContent = `${call.callee} · ${call.analyzer}`;
       } else {
         strong.textContent = file.path;
         detail.textContent = `${file.language} · ${file.loc.toLocaleString()} lines · ${file.outgoing.toLocaleString()} out / ${file.incoming.toLocaleString()} in`;
@@ -1408,7 +1408,7 @@
         const target = fileById.get(selectedCall.target);
         updateEndpointLink(document.getElementById('atlas-call-source'), source, selectedCall.sourceLine);
         updateEndpointLink(document.getElementById('atlas-call-target'), target, selectedCall.targetLine);
-        document.getElementById('atlas-selected-call-meta').textContent = `${selectedCall.callee} · ${selectedCall.analyzer} · ${Math.round(selectedCall.confidence * 100)}% confidence`;
+        document.getElementById('atlas-selected-call-meta').textContent = `${selectedCall.callee} · ${selectedCall.analyzer}`;
       } else {
         updateEndpointLink(document.getElementById('atlas-call-source'), null, null);
         updateEndpointLink(document.getElementById('atlas-call-target'), null, null);
@@ -1452,7 +1452,7 @@
         title.textContent = `${outgoing ? '→' : '←'} ${peer ? peer.path : 'unknown file'}`;
         const details = document.createElement('span');
         const line = outgoing ? call.sourceLine : (call.targetLine || '?');
-        details.textContent = `line ${line} · ${call.callee} · ${call.analyzer} · ${Math.round(call.confidence * 100)}%`;
+        details.textContent = `line ${line} · ${call.callee} · ${call.analyzer}`;
         button.append(title, details);
         button.classList.toggle('is-active', state.selectedCall === call);
         button.addEventListener('mouseenter', () => { state.hoveredCall = call; scheduleRender(); });

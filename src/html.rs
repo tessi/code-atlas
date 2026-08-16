@@ -115,7 +115,6 @@ struct ViewerCall {
     target_line: Option<u32>,
     callee: String,
     analyzer: String,
-    confidence: f32,
     point_start: usize,
     point_count: usize,
     bounds: [u16; 4],
@@ -241,7 +240,6 @@ pub(crate) fn render_interactive_html(
             target_line: call.target_line,
             callee: call.callee.clone(),
             analyzer: call.analyzer.clone(),
-            confidence: call.confidence,
             point_start,
             point_count: curve.len(),
             bounds: [min_x, min_y, max_x, max_y],
@@ -548,6 +546,9 @@ mod tests {
         assert!(html.contains("code-atlas.theme.preference.v1"));
         assert!(html.contains("(prefers-color-scheme: dark)"));
         assert!(html.contains("\"version\":3"));
+        assert!(!html.contains("\"confidence\":"));
+        assert!(!html.contains("call.confidence"));
+        assert!(!html.contains("% confidence"));
         assert!(html.contains("\"initialTheme\":\"dark\""));
         assert!(html.contains("\"callOpacity\":34"));
         assert!(html.contains("\"densityAwareExposure\":true"));
