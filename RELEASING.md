@@ -26,8 +26,8 @@ never publishes anything.
 6. Create and push an annotated tag matching the manifest version:
 
    ```sh
-   git tag -a v0.1.0 -m "Code Atlas 0.1.0"
-   git push origin v0.1.0
+   git tag -a v0.2.0 -m "Code Atlas 0.2.0"
+   git push origin v0.2.0
    ```
 
 The release workflow checks that the tag and manifest versions match, runs the
