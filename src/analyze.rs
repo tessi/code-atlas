@@ -4,6 +4,7 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::OnceLock,
     thread,
 };
 
@@ -18,11 +19,12 @@ use crate::{
     scip::{ScipDocument, ScipIndex, ScipRange, decode_index},
 };
 
-const CACHE_VERSION: u32 = 7;
+const CACHE_VERSION: u32 = 10;
 const FILE_MARKER: &str = "__CODE_ATLAS_FILE__\t";
 const END_MARKER: &str = "__CODE_ATLAS_END__";
 const ERROR_MARKER: &str = "__CODE_ATLAS_ERROR__\t";
 const SCRIPT_CALL_MARKER: &str = "__CODE_ATLAS_SCRIPT_CALL__\t";
+const BEAM_CALL_MARKER: &str = "__CODE_ATLAS_BEAM_CALL__\t";
 const XREF_BATCH_EXPRESSION: &str = r#"
 for path <- IO.stream(:stdio, :line) do
   path = String.trim(path)
@@ -44,7 +46,17 @@ for raw_path <- IO.stream(:stdio, :line) do
   IO.puts("__CODE_ATLAS_FILE__\t" <> path)
   case File.read(path) do
     {:ok, contents} ->
-      case Code.string_to_quoted(contents, columns: true) do
+      parsed =
+        if String.ends_with?(path, ".eex") do
+          try do
+            {:ok, EEx.compile_string(contents, file: path, line: 1)}
+          rescue
+            error -> {:error, error}
+          end
+        else
+          Code.string_to_quoted(contents, columns: true)
+        end
+      case parsed do
         {:ok, ast} ->
           {_ast, aliases} = Macro.prewalk(ast, %{}, fn
             {:alias, _, [{:__aliases__, _, parts} | options]} = node, aliases ->
@@ -81,6 +93,97 @@ for raw_path <- IO.stream(:stdio, :line) do
   IO.puts("__CODE_ATLAS_END__")
 end
 "#;
+const ELIXIR_BEAM_EXPRESSION: &str = r#"
+defmodule CodeAtlas.BeamCalls do
+  def scan(forms, project_modules) do
+    forms
+    |> calls(project_modules, [])
+    |> Enum.reverse()
+  end
+
+  defp calls({:call, annotation, {:remote, _, {:atom, _, module}, {:atom, _, function}}, arguments}, project_modules, calls) do
+    calls = Enum.reduce(arguments, calls, &calls(&1, project_modules, &2))
+    if MapSet.member?(project_modules, module) do
+      [{line(annotation), module, function, length(arguments)} | calls]
+    else
+      calls
+    end
+  end
+
+  defp calls(tuple, project_modules, calls) when is_tuple(tuple) do
+    tuple
+    |> Tuple.to_list()
+    |> Enum.reduce(calls, &calls(&1, project_modules, &2))
+  end
+
+  defp calls(list, project_modules, calls) when is_list(list) do
+    Enum.reduce(list, calls, &calls(&1, project_modules, &2))
+  end
+
+  defp calls(_, _, calls), do: calls
+
+  defp line(annotation) do
+    case :erl_anno.line(annotation) do
+      line when is_integer(line) -> max(line, 1)
+      _ -> 1
+    end
+  rescue
+    _ -> 1
+  end
+end
+
+requested =
+  IO.stream(:stdio, :line)
+  |> Stream.map(&String.trim/1)
+  |> Stream.reject(&(&1 == ""))
+  |> MapSet.new()
+
+project_modules =
+  Mix.Project.config()[:app]
+  |> Application.spec(:modules)
+  |> List.wrap()
+  |> MapSet.new()
+
+Mix.Project.compile_path()
+|> Path.join("*.beam")
+|> Path.wildcard()
+|> Enum.sort()
+|> Task.async_stream(
+  fn beam ->
+    case :beam_lib.chunks(String.to_charlist(beam), [:abstract_code, :compile_info]) do
+      {:ok, {_, chunks}} ->
+        with {:raw_abstract_v1, forms} <- chunks[:abstract_code],
+             source when not is_nil(source) <- chunks[:compile_info][:source] do
+          source = source |> to_string() |> Path.expand() |> Path.relative_to_cwd()
+          if MapSet.member?(requested, source) do
+            {:ok, source, CodeAtlas.BeamCalls.scan(forms, project_modules)}
+          else
+            :skip
+          end
+        else
+          _ -> :skip
+        end
+
+      _ ->
+        :skip
+    end
+  end,
+  ordered: true,
+  max_concurrency: System.schedulers_online(),
+  timeout: :infinity
+)
+|> Enum.each(fn
+  {:ok, {:ok, source, calls}} ->
+    IO.puts("__CODE_ATLAS_FILE__\t" <> source)
+    Enum.each(calls, fn {line, module, function, arity} ->
+      IO.puts("__CODE_ATLAS_BEAM_CALL__\t#{line}\t#{inspect(module)}\t#{function}\t#{arity}")
+    end)
+    IO.puts("__CODE_ATLAS_END__")
+
+  _ ->
+    :ok
+end)
+"#;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct XrefCall {
@@ -95,6 +198,27 @@ pub struct XrefCall {
 struct RustlerTarget {
     file: NodeId,
     line: Option<u32>,
+}
+
+#[derive(Debug)]
+struct BeamCall {
+    source: NodeId,
+    source_line: u32,
+    module: String,
+    function: String,
+    arity: u32,
+}
+
+#[derive(Debug, Default)]
+struct ElixirSourceIndex {
+    module_files: HashMap<String, NodeId>,
+    definition_lines: HashMap<NodeId, HashMap<String, u32>>,
+}
+
+#[derive(Debug, Default)]
+struct ErlangSourceIndex {
+    module_files: HashMap<String, NodeId>,
+    definition_lines: HashMap<NodeId, HashMap<String, u32>>,
 }
 
 fn mix_project_roots(atlas: &Atlas) -> Vec<String> {
@@ -171,18 +295,17 @@ pub fn analyze_calls(atlas: &mut Atlas) -> Result<()> {
 
     initialize_language_coverage(atlas);
 
-    let module_files = elixir_module_files(atlas)?;
-    let rustler_targets = rustler_targets(atlas, &module_files)?;
+    let elixir_index = elixir_source_index(atlas)?;
+    let rustler_targets = rustler_targets(atlas, &elixir_index.module_files)?;
     let mut next_id = atlas.calls.len() as u64;
 
     let project_roots = mix_project_roots(atlas);
-    let mut cacheable = true;
     if !project_roots.is_empty() {
         for project_root in &project_roots {
             let files = elixir_files_for_project(atlas, project_root, &project_roots);
-            cacheable &= analyze_elixir_calls(
+            analyze_elixir_calls(
                 atlas,
-                &module_files,
+                &elixir_index,
                 &rustler_targets,
                 &mut next_id,
                 project_root,
@@ -199,15 +322,14 @@ pub fn analyze_calls(atlas: &mut Atlas) -> Result<()> {
             .warnings
             .push("no mix.exs found; Elixir xref analyzer was skipped".to_owned());
     }
-    analyze_elixir_scripts(atlas, &module_files, &mut next_id)?;
+    analyze_elixir_scripts(atlas, &elixir_index, &mut next_id)?;
+    analyze_erlang_calls(atlas, &elixir_index, &mut next_id)?;
 
-    cacheable &= analyze_typescript_calls(atlas, &mut next_id)?;
+    analyze_typescript_calls(atlas, &mut next_id)?;
     analyze_gleam_calls(atlas, &mut next_id)?;
-    cacheable &= analyze_rust_calls(atlas, &mut next_id)?;
+    analyze_rust_calls(atlas, &mut next_id)?;
 
-    if cacheable {
-        save_cached_analysis(atlas)?;
-    }
+    save_cached_analysis(atlas)?;
 
     exclude_same_file_calls(atlas);
 
@@ -215,7 +337,14 @@ pub fn analyze_calls(atlas: &mut Atlas) -> Result<()> {
 }
 
 fn initialize_language_coverage(atlas: &mut Atlas) {
-    for language in ["elixir", "rust", "javascript", "typescript", "gleam"] {
+    for language in [
+        "elixir",
+        "erlang",
+        "rust",
+        "javascript",
+        "typescript",
+        "gleam",
+    ] {
         let files_discovered = atlas
             .nodes
             .iter()
@@ -233,8 +362,14 @@ fn initialize_language_coverage(atlas: &mut Atlas) {
     }
     if coverage_mut(atlas, "elixir").files_discovered > 0 {
         let elixir = coverage_mut(atlas, "elixir");
-        elixir.provider = "mix-xref + script-static".to_owned();
-        elixir.fidelity = "compiler-backed project files; conservative scripts".to_owned();
+        elixir.provider = "mix-xref".to_owned();
+        elixir.fidelity = "compiler-backed project files".to_owned();
+    }
+    if coverage_mut(atlas, "erlang").files_discovered > 0 {
+        let erlang = coverage_mut(atlas, "erlang");
+        erlang.provider = "erlang-remote-static".to_owned();
+        erlang.fidelity =
+            "static in-repository remote calls, function references, and imports".to_owned();
     }
     if coverage_mut(atlas, "gleam").files_discovered > 0 {
         let gleam = coverage_mut(atlas, "gleam");
@@ -259,14 +394,13 @@ fn exclude_same_file_calls(atlas: &mut Atlas) {
 
 fn analyze_elixir_calls(
     atlas: &mut Atlas,
-    module_files: &HashMap<String, NodeId>,
+    elixir_index: &ElixirSourceIndex,
     rustler_targets: &HashMap<(String, String), RustlerTarget>,
     next_id: &mut u64,
     project_root: &str,
     files: Vec<(String, NodeId)>,
 ) -> bool {
-    // Prepare the whole project once. The subsequent traces share one Mix/BEAM
-    // runtime and explicitly skip compilation.
+    // Compile once so the fast path can read exact calls from BEAM debug data.
     let compile = Command::new("mix")
         .arg("compile")
         .env("MIX_OS_CONCURRENCY_LOCK", "0")
@@ -294,8 +428,215 @@ fn analyze_elixir_calls(
     if files.is_empty() {
         return true;
     }
+
+    let analyzed = match analyze_elixir_beam_calls(
+        atlas,
+        elixir_index,
+        rustler_targets,
+        next_id,
+        project_root,
+        &files,
+    ) {
+        Ok(analyzed) => analyzed,
+        Err(error) => {
+            atlas.report.warnings.push(format!(
+                "could not read compiled Elixir calls in {}: {error:#}; falling back to mix xref",
+                display_project_root(project_root)
+            ));
+            HashSet::new()
+        }
+    };
+    let missing: Vec<_> = files
+        .into_iter()
+        .filter(|(_, id)| !analyzed.contains(id))
+        .collect();
+    if missing.is_empty() {
+        return true;
+    }
+    if !analyzed.is_empty() {
+        let coverage = coverage_mut(atlas, "elixir");
+        coverage.provider = "compiled-beam + xref-fallback".to_owned();
+        coverage.fidelity =
+            "expanded compiled calls with exact lines; compiler-traced fallback files".to_owned();
+    }
     eprintln!(
-        "Tracing {} Elixir files in {} with one Mix runtime…",
+        "Falling back to mix xref for {} Elixir files without compiled debug data in {}…",
+        missing.len(),
+        display_project_root(project_root)
+    );
+    analyze_elixir_xref_calls(
+        atlas,
+        elixir_index,
+        rustler_targets,
+        next_id,
+        project_root,
+        missing,
+    )
+}
+
+fn analyze_elixir_beam_calls(
+    atlas: &mut Atlas,
+    elixir_index: &ElixirSourceIndex,
+    rustler_targets: &HashMap<(String, String), RustlerTarget>,
+    next_id: &mut u64,
+    project_root: &str,
+    files: &[(String, NodeId)],
+) -> Result<HashSet<NodeId>> {
+    eprintln!(
+        "Reading compiled call data for {} Elixir files in {}…",
+        files.len(),
+        display_project_root(project_root)
+    );
+    let source_ids: HashMap<_, _> = files.iter().cloned().collect();
+    let mut child = Command::new("mix")
+        .args([
+            "run",
+            "--no-compile",
+            "--no-deps-check",
+            "--no-start",
+            "-e",
+            ELIXIR_BEAM_EXPRESSION,
+        ])
+        .env("MIX_OS_CONCURRENCY_LOCK", "0")
+        .current_dir(atlas.root_path.join(project_root))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let input_paths: Vec<_> = files.iter().map(|(path, _)| path.clone()).collect();
+    let writer = thread::spawn(move || {
+        for path in input_paths {
+            writeln!(stdin, "{path}")?;
+        }
+        Ok::<_, std::io::Error>(())
+    });
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    let stderr_reader = thread::spawn(move || {
+        let mut contents = String::new();
+        stderr.read_to_string(&mut contents).map(|_| contents)
+    });
+    let stdout = child.stdout.take().expect("piped stdout");
+    let mut current = None;
+    let mut analyzed = HashSet::new();
+    let mut calls = Vec::new();
+    for line in BufReader::new(stdout).lines() {
+        let line = line?;
+        if let Some(path) = line.strip_prefix(FILE_MARKER) {
+            current = source_ids.get(path).copied();
+            continue;
+        }
+        if line == END_MARKER {
+            if let Some(source) = current {
+                if analyzed.insert(source)
+                    && (analyzed.len().is_multiple_of(1_000) || analyzed.len() == files.len())
+                {
+                    eprintln!(
+                        "  read {}/{} compiled Elixir files in {}",
+                        analyzed.len(),
+                        files.len(),
+                        display_project_root(project_root)
+                    );
+                }
+            }
+            current = None;
+            continue;
+        }
+        let Some(payload) = line.strip_prefix(BEAM_CALL_MARKER) else {
+            continue;
+        };
+        let Some(source) = current else {
+            continue;
+        };
+        let mut fields = payload.splitn(4, '\t');
+        let Some(source_line) = fields.next().and_then(|value| value.parse::<u32>().ok()) else {
+            continue;
+        };
+        let Some(module) = fields.next() else {
+            continue;
+        };
+        let Some(function) = fields.next() else {
+            continue;
+        };
+        let Some(arity) = fields.next().and_then(|value| value.parse::<u32>().ok()) else {
+            continue;
+        };
+        calls.push(BeamCall {
+            source,
+            source_line,
+            module: module.to_owned(),
+            function: function.to_owned(),
+            arity,
+        });
+    }
+    writer
+        .join()
+        .expect("BEAM input writer panicked")
+        .map_err(|error| anyhow::anyhow!("could not send BEAM input: {error}"))?;
+    let status = child.wait()?;
+    let stderr = stderr_reader
+        .join()
+        .expect("BEAM stderr reader panicked")
+        .unwrap_or_default();
+    if !status.success() {
+        anyhow::bail!(
+            "compiled BEAM scanner exited with {status}: {}",
+            stderr.trim()
+        );
+    }
+
+    atlas.report.elixir_files_traced += analyzed.len();
+    coverage_mut(atlas, "elixir").files_analyzed += analyzed.len();
+    for call in calls {
+        let key = (call.module.clone(), call.function.clone());
+        let (target, target_line, analyzer, confidence) =
+            if let Some(target) = rustler_targets.get(&key) {
+                atlas.report.rustler_calls += 1;
+                (target.file, target.line, "elixir-beam+rustler", 0.98)
+            } else if let Some(target) = elixir_index.module_files.get(&call.module) {
+                (
+                    *target,
+                    definition_line(elixir_index, *target, &call.function),
+                    "elixir-beam",
+                    0.95,
+                )
+            } else {
+                atlas.report.unresolved_calls += 1;
+                coverage_mut(atlas, "elixir").callsites_unresolved += 1;
+                continue;
+            };
+        atlas.calls.push(Callsite {
+            id: *next_id,
+            source: call.source,
+            source_line: call.source_line,
+            target,
+            target_line,
+            callee: format!("{}.{}/{}", call.module, call.function, call.arity),
+            kind: "runtime".to_owned(),
+            analyzer: analyzer.to_owned(),
+            confidence,
+        });
+        *next_id += 1;
+        atlas.report.resolved_calls += 1;
+        coverage_mut(atlas, "elixir").callsites_resolved += 1;
+    }
+    let coverage = coverage_mut(atlas, "elixir");
+    coverage.provider = "compiled-beam".to_owned();
+    coverage.fidelity =
+        "expanded remote calls from compiled debug data with exact source lines".to_owned();
+    Ok(analyzed)
+}
+
+fn analyze_elixir_xref_calls(
+    atlas: &mut Atlas,
+    elixir_index: &ElixirSourceIndex,
+    rustler_targets: &HashMap<(String, String), RustlerTarget>,
+    next_id: &mut u64,
+    project_root: &str,
+    files: Vec<(String, NodeId)>,
+) -> bool {
+    eprintln!(
+        "Tracing {} fallback Elixir files in {} with one Mix runtime…",
         files.len(),
         display_project_root(project_root)
     );
@@ -403,13 +744,10 @@ fn analyze_elixir_calls(
             let (target, target_line, analyzer) = if let Some(target) = rustler_targets.get(&key) {
                 atlas.report.rustler_calls += 1;
                 (target.file, target.line, "elixir-xref+rustler")
-            } else if let Some(target) = module_files.get(&call.module) {
+            } else if let Some(target) = elixir_index.module_files.get(&call.module) {
                 (
                     *target,
-                    definition_line(
-                        &atlas.root_path.join(&atlas.nodes[*target].path),
-                        &call.function,
-                    ),
+                    definition_line(elixir_index, *target, &call.function),
                     "elixir-xref",
                 )
             } else {
@@ -589,9 +927,6 @@ fn save_cached_analysis(atlas: &mut Atlas) -> Result<()> {
 }
 
 fn analysis_cache_path(atlas: &Atlas) -> Option<PathBuf> {
-    if atlas.dirty {
-        return None;
-    }
     let output = Command::new("git")
         .args(["rev-parse", "--git-dir"])
         .current_dir(&atlas.root_path)
@@ -607,24 +942,37 @@ fn analysis_cache_path(atlas: &Atlas) -> Option<PathBuf> {
         atlas.root_path.join(git_dir)
     };
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in atlas
-        .revision
-        .as_bytes()
-        .iter()
-        .copied()
-        .chain(atlas.files().flat_map(|node| {
-            node.path
+    let tracked_diff = Command::new("git")
+        .args(["diff", "--binary", "HEAD", "--"])
+        .current_dir(&atlas.root_path)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| output.stdout)
+        .unwrap_or_default();
+    for byte in std::iter::once(u8::from(atlas.dirty))
+        .chain(
+            atlas
+                .revision
                 .as_bytes()
                 .iter()
                 .copied()
-                .chain(std::iter::once(0))
-        }))
+                .chain(atlas.files().flat_map(|node| {
+                    node.path
+                        .as_bytes()
+                        .iter()
+                        .copied()
+                        .chain(std::iter::once(0))
+                })),
+        )
+        .chain(tracked_diff)
     {
         hash ^= u64::from(byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     for tool in [
         "elixir".to_owned(),
+        "erl".to_owned(),
         rust_analyzer_binary(),
         scip_typescript_binary(atlas),
     ] {
@@ -654,38 +1002,40 @@ fn command_version(binary: &str) -> String {
 
 fn analyze_elixir_scripts(
     atlas: &mut Atlas,
-    module_files: &HashMap<String, NodeId>,
+    elixir_index: &ElixirSourceIndex,
     next_id: &mut u64,
 ) -> Result<()> {
     if coverage_mut(atlas, "elixir").files_discovered == 0 {
         return Ok(());
     }
-    match analyze_elixir_scripts_ast(atlas, module_files, next_id) {
+    match analyze_elixir_scripts_ast(atlas, elixir_index, next_id) {
         Ok(true) => {
             let coverage = coverage_mut(atlas, "elixir");
-            coverage.provider = "mix-xref + script-ast".to_owned();
-            coverage.fidelity = "compiler-backed project files; compiler-parsed scripts".to_owned();
+            coverage.provider = format!("{} + script-ast", coverage.provider);
+            coverage.fidelity = format!("{}; compiler-parsed scripts", coverage.fidelity);
             Ok(())
         }
         Ok(false) => {
             let coverage = coverage_mut(atlas, "elixir");
-            coverage.provider = "mix-xref + script-static".to_owned();
-            analyze_elixir_scripts_fallback(atlas, module_files, next_id)
+            coverage.provider = format!("{} + script-static", coverage.provider);
+            coverage.fidelity = format!("{}; conservatively parsed scripts", coverage.fidelity);
+            analyze_elixir_scripts_fallback(atlas, elixir_index, next_id)
         }
         Err(error) => {
             atlas.report.warnings.push(format!(
                 "Elixir AST script analysis failed; scripts used the regex fallback: {error:#}"
             ));
             let coverage = coverage_mut(atlas, "elixir");
-            coverage.provider = "mix-xref + script-static".to_owned();
-            analyze_elixir_scripts_fallback(atlas, module_files, next_id)
+            coverage.provider = format!("{} + script-static", coverage.provider);
+            coverage.fidelity = format!("{}; conservatively parsed scripts", coverage.fidelity);
+            analyze_elixir_scripts_fallback(atlas, elixir_index, next_id)
         }
     }
 }
 
 fn analyze_elixir_scripts_ast(
     atlas: &mut Atlas,
-    module_files: &HashMap<String, NodeId>,
+    elixir_index: &ElixirSourceIndex,
     next_id: &mut u64,
 ) -> Result<bool> {
     if !command_exists("elixir") {
@@ -694,7 +1044,9 @@ fn analyze_elixir_scripts_ast(
     let scripts: Vec<_> = atlas
         .nodes
         .iter()
-        .filter(|node| node.is_file() && node.path.ends_with(".exs"))
+        .filter(|node| {
+            node.is_file() && (node.path.ends_with(".exs") || node.path.ends_with(".eex"))
+        })
         .map(|node| (node.id, node.path.clone()))
         .collect();
     if scripts.is_empty() {
@@ -764,7 +1116,7 @@ fn analyze_elixir_scripts_ast(
         let Some(arity) = fields.next().and_then(|value| value.parse::<u32>().ok()) else {
             continue;
         };
-        let Some(target) = module_files.get(module).copied() else {
+        let Some(target) = elixir_index.module_files.get(module).copied() else {
             atlas.report.unresolved_calls += 1;
             coverage_mut(atlas, "elixir").callsites_unresolved += 1;
             continue;
@@ -774,10 +1126,7 @@ fn analyze_elixir_scripts_ast(
             source,
             source_line,
             target,
-            target_line: definition_line(
-                &atlas.root_path.join(&atlas.nodes[target].path),
-                function,
-            ),
+            target_line: definition_line(elixir_index, target, function),
             callee: format!("{module}.{function}/{arity}"),
             kind: "syntax".to_owned(),
             analyzer: "elixir-script-ast".to_owned(),
@@ -792,7 +1141,7 @@ fn analyze_elixir_scripts_ast(
 
 fn analyze_elixir_scripts_fallback(
     atlas: &mut Atlas,
-    module_files: &HashMap<String, NodeId>,
+    elixir_index: &ElixirSourceIndex,
     next_id: &mut u64,
 ) -> Result<()> {
     let alias_pattern =
@@ -801,7 +1150,9 @@ fn analyze_elixir_scripts_fallback(
     let scripts: Vec<_> = atlas
         .nodes
         .iter()
-        .filter(|node| node.is_file() && node.path.ends_with(".exs"))
+        .filter(|node| {
+            node.is_file() && (node.path.ends_with(".exs") || node.path.ends_with(".eex"))
+        })
         .map(|node| (node.id, node.path.clone()))
         .collect();
     for (source, path) in scripts {
@@ -825,14 +1176,15 @@ fn analyze_elixir_scripts_fallback(
             let code = line.split('#').next().unwrap_or("");
             for captures in call_pattern.captures_iter(code) {
                 let written_module = &captures[1];
-                let module = module_files
+                let module = elixir_index
+                    .module_files
                     .contains_key(written_module)
                     .then(|| written_module.to_owned())
                     .or_else(|| aliases.get(written_module).cloned());
                 let Some(module) = module else {
                     continue;
                 };
-                let Some(target) = module_files.get(&module).copied() else {
+                let Some(target) = elixir_index.module_files.get(&module).copied() else {
                     continue;
                 };
                 let function = captures[2].to_owned();
@@ -841,10 +1193,7 @@ fn analyze_elixir_scripts_fallback(
                     source,
                     source_line: index as u32 + 1,
                     target,
-                    target_line: definition_line(
-                        &atlas.root_path.join(&atlas.nodes[target].path),
-                        &function,
-                    ),
+                    target_line: definition_line(elixir_index, target, &function),
                     callee: format!("{module}.{function}/?"),
                     kind: "syntax".to_owned(),
                     analyzer: "elixir-script-static".to_owned(),
@@ -857,6 +1206,260 @@ fn analyze_elixir_scripts_fallback(
         }
     }
     Ok(())
+}
+
+fn analyze_erlang_calls(
+    atlas: &mut Atlas,
+    elixir_index: &ElixirSourceIndex,
+    next_id: &mut u64,
+) -> Result<()> {
+    let atom = r"(?:[a-z][A-Za-z0-9_@]*|'(?:\\.|[^'\\])*')";
+    let module_pattern = Regex::new(&format!(r"(?m)^\s*-module\s*\(\s*({atom})\s*\)\s*\."))?;
+    let definition_pattern = Regex::new(&format!(r"(?m)^({atom})\s*\("))?;
+    let remote_call_pattern = Regex::new(&format!(r"({atom})\s*:\s*({atom})\s*\("))?;
+    let remote_fun_pattern = Regex::new(&format!(r"\bfun\s+({atom})\s*:\s*({atom})\s*/\s*[0-9]+"))?;
+    let import_pattern = Regex::new(&format!(
+        r"(?s)-import\s*\(\s*({atom})\s*,\s*\[(.*?)\]\s*\)\s*\."
+    ))?;
+    let imported_function_pattern = Regex::new(&format!(r"({atom})\s*/\s*[0-9]+"))?;
+
+    let files: Vec<_> = atlas
+        .nodes
+        .iter()
+        .filter(|node| node.is_file() && node.language == "erlang")
+        .map(|node| {
+            let contents = fs::read_to_string(atlas.root_path.join(&node.path)).unwrap_or_default();
+            (node.id, contents)
+        })
+        .collect();
+    if files.is_empty() {
+        return Ok(());
+    }
+
+    let mut index = ErlangSourceIndex::default();
+    let mut sanitized_files = Vec::with_capacity(files.len());
+    for (id, contents) in files {
+        let sanitized = sanitize_erlang_source(&contents);
+        if let Some(captures) = module_pattern.captures(&sanitized) {
+            index
+                .module_files
+                .insert(normalize_erlang_atom(&captures[1]), id);
+        }
+        let mut definitions = HashMap::new();
+        for captures in definition_pattern.captures_iter(&sanitized) {
+            let function = normalize_erlang_atom(&captures[1]);
+            let line = erlang_line_number(&sanitized, captures.get(1).unwrap().start());
+            definitions.entry(function).or_insert(line);
+        }
+        index.definition_lines.insert(id, definitions);
+        sanitized_files.push((id, sanitized));
+    }
+
+    for (source, sanitized) in sanitized_files {
+        atlas.report.erlang_files_scanned += 1;
+        coverage_mut(atlas, "erlang").files_analyzed += 1;
+
+        for captures in remote_call_pattern.captures_iter(&sanitized) {
+            let matched = captures.get(0).unwrap();
+            if erlang_line_is_attribute(&sanitized, matched.start()) {
+                continue;
+            }
+            record_erlang_call(
+                atlas,
+                elixir_index,
+                &index,
+                next_id,
+                source,
+                erlang_line_number(&sanitized, matched.start()),
+                &normalize_erlang_atom(&captures[1]),
+                &normalize_erlang_atom(&captures[2]),
+                "runtime",
+            );
+        }
+
+        for captures in remote_fun_pattern.captures_iter(&sanitized) {
+            let matched = captures.get(0).unwrap();
+            if erlang_line_is_attribute(&sanitized, matched.start()) {
+                continue;
+            }
+            record_erlang_call(
+                atlas,
+                elixir_index,
+                &index,
+                next_id,
+                source,
+                erlang_line_number(&sanitized, matched.start()),
+                &normalize_erlang_atom(&captures[1]),
+                &normalize_erlang_atom(&captures[2]),
+                "reference",
+            );
+        }
+
+        let mut imports = HashMap::new();
+        for captures in import_pattern.captures_iter(&sanitized) {
+            let module = normalize_erlang_atom(&captures[1]);
+            for function in imported_function_pattern.captures_iter(&captures[2]) {
+                imports.insert(normalize_erlang_atom(&function[1]), module.clone());
+            }
+        }
+        for (function, module) in imports {
+            let call_pattern = Regex::new(&format!(r"\b{}\s*\(", regex::escape(&function)))?;
+            for matched in call_pattern.find_iter(&sanitized) {
+                if erlang_line_is_attribute(&sanitized, matched.start())
+                    || erlang_call_is_qualified(&sanitized, matched.start())
+                {
+                    continue;
+                }
+                record_erlang_call(
+                    atlas,
+                    elixir_index,
+                    &index,
+                    next_id,
+                    source,
+                    erlang_line_number(&sanitized, matched.start()),
+                    &module,
+                    &function,
+                    "runtime",
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_erlang_call(
+    atlas: &mut Atlas,
+    elixir_index: &ElixirSourceIndex,
+    erlang_index: &ErlangSourceIndex,
+    next_id: &mut u64,
+    source: NodeId,
+    source_line: u32,
+    module: &str,
+    function: &str,
+    kind: &str,
+) {
+    let erlang_target = erlang_index.module_files.get(module).copied();
+    let elixir_target = module
+        .strip_prefix("Elixir.")
+        .and_then(|name| elixir_index.module_files.get(name).copied());
+    let Some(target) = erlang_target.or(elixir_target) else {
+        return;
+    };
+    let target_line = erlang_index
+        .definition_lines
+        .get(&target)
+        .and_then(|definitions| definitions.get(function).copied())
+        .or_else(|| definition_line(elixir_index, target, function));
+    atlas.calls.push(Callsite {
+        id: *next_id,
+        source,
+        source_line,
+        target,
+        target_line,
+        callee: format!("{module}:{function}"),
+        kind: kind.to_owned(),
+        analyzer: "erlang-remote-static".to_owned(),
+        confidence: 0.8,
+    });
+    *next_id += 1;
+    atlas.report.resolved_calls += 1;
+    atlas.report.erlang_calls += 1;
+    coverage_mut(atlas, "erlang").callsites_resolved += 1;
+}
+
+fn sanitize_erlang_source(contents: &str) -> String {
+    let mut output = String::with_capacity(contents.len());
+    let mut in_comment = false;
+    let mut in_string = false;
+    let mut in_quoted_atom = false;
+    let mut escaped = false;
+    for character in contents.chars() {
+        if in_comment {
+            if character == '\n' {
+                in_comment = false;
+                output.push('\n');
+            } else {
+                output.push(' ');
+            }
+            continue;
+        }
+        if in_string {
+            if character == '\n' {
+                output.push('\n');
+            } else {
+                output.push(' ');
+            }
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if in_quoted_atom {
+            output.push(character);
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '\'' {
+                in_quoted_atom = false;
+            }
+            continue;
+        }
+        match character {
+            '%' => {
+                in_comment = true;
+                output.push(' ');
+            }
+            '"' => {
+                in_string = true;
+                output.push(' ');
+            }
+            '\'' => {
+                in_quoted_atom = true;
+                output.push(character);
+            }
+            _ => output.push(character),
+        }
+    }
+    output
+}
+
+fn normalize_erlang_atom(atom: &str) -> String {
+    atom.strip_prefix('\'')
+        .and_then(|value| value.strip_suffix('\''))
+        .unwrap_or(atom)
+        .replace("\\'", "'")
+        .replace("\\\\", "\\")
+}
+
+fn erlang_line_number(source: &str, byte_offset: usize) -> u32 {
+    source[..byte_offset]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count() as u32
+        + 1
+}
+
+fn erlang_line_is_attribute(source: &str, byte_offset: usize) -> bool {
+    let line_start = source[..byte_offset]
+        .rfind('\n')
+        .map_or(0, |position| position + 1);
+    source[line_start..byte_offset]
+        .trim_start()
+        .starts_with('-')
+}
+
+fn erlang_call_is_qualified(source: &str, byte_offset: usize) -> bool {
+    source[..byte_offset]
+        .chars()
+        .rev()
+        .find(|character| !character.is_whitespace())
+        == Some(':')
 }
 
 fn analyze_typescript_calls(atlas: &mut Atlas, next_id: &mut u64) -> Result<bool> {
@@ -1695,10 +2298,13 @@ fn span_line(span: proc_macro2::Span) -> u32 {
 }
 
 pub fn parse_xref_line(line: &str) -> Option<XrefCall> {
-    let pattern = Regex::new(
-        r"^.+?:(\d+): (?:import )?call ([A-Z][A-Za-z0-9_.]*)\.([a-zA-Z0-9_!?]+)/([0-9]+) \(([^)]+)\)$",
-    )
-    .expect("valid xref regex");
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    let pattern = PATTERN.get_or_init(|| {
+        Regex::new(
+            r"^.+?:(\d+): (?:import )?call ([A-Z][A-Za-z0-9_.]*)\.([a-zA-Z0-9_!?]+)/([0-9]+) \(([^)]+)\)$",
+        )
+        .expect("valid xref regex")
+    });
     let captures = pattern.captures(line)?;
     Some(XrefCall {
         source_line: captures.get(1)?.as_str().parse().ok()?,
@@ -1709,18 +2315,41 @@ pub fn parse_xref_line(line: &str) -> Option<XrefCall> {
     })
 }
 
-fn elixir_module_files(atlas: &Atlas) -> Result<HashMap<String, NodeId>> {
-    let pattern = Regex::new(r"(?m)^\s*defmodule\s+([A-Z][A-Za-z0-9_.]*)\s+do\b")?;
-    let mut modules = HashMap::new();
+fn elixir_source_index(atlas: &Atlas) -> Result<ElixirSourceIndex> {
+    let module_pattern = Regex::new(r"(?m)^\s*defmodule\s+([A-Z][A-Za-z0-9_.]*)\s+do\b")?;
+    let mut index = ElixirSourceIndex::default();
     for node in atlas.nodes.iter().filter(|node| {
         node.is_file() && (node.path.ends_with(".ex") || node.path.ends_with(".exs"))
     }) {
         let contents = fs::read_to_string(atlas.root_path.join(&node.path)).unwrap_or_default();
-        for captures in pattern.captures_iter(&contents) {
-            modules.insert(captures[1].to_owned(), node.id);
+        for captures in module_pattern.captures_iter(&contents) {
+            index.module_files.insert(captures[1].to_owned(), node.id);
         }
+        index
+            .definition_lines
+            .insert(node.id, index_elixir_definition_lines(&contents));
     }
-    Ok(modules)
+    Ok(index)
+}
+
+fn index_elixir_definition_lines(contents: &str) -> HashMap<String, u32> {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    let pattern = PATTERN.get_or_init(|| {
+        Regex::new(
+            r"^\s*(?:defp?|defmacrop?|defguardp?|defdelegate)\s+([a-zA-Z_][A-Za-z0-9_!?]*)(?:\s*\(|\s*,|\s+do|\s+when)",
+        )
+        .expect("valid Elixir definition regex")
+    });
+    let mut definitions = HashMap::new();
+    for (line, source) in contents.lines().enumerate() {
+        let Some(captures) = pattern.captures(source) else {
+            continue;
+        };
+        definitions
+            .entry(captures[1].to_owned())
+            .or_insert(line as u32 + 1);
+    }
+    definitions
 }
 
 fn rustler_targets(
@@ -1808,15 +2437,8 @@ fn project_roots_for_manifest(atlas: &Atlas, manifest: &str) -> Vec<String> {
     roots
 }
 
-fn definition_line(path: &Path, function: &str) -> Option<u32> {
-    let contents = fs::read_to_string(path).ok()?;
-    let escaped = regex::escape(function);
-    let pattern = Regex::new(&format!(
-        r"(?m)^\s*(?:defp?|defmacrop?|defguardp?|defdelegate)\s+{escaped}(?:\s*\(|\s*,|\s+do|\s+when)"
-    ))
-    .ok()?;
-    let found = pattern.find(&contents)?;
-    Some(contents[..found.start()].lines().count() as u32 + 1)
+fn definition_line(index: &ElixirSourceIndex, file: NodeId, function: &str) -> Option<u32> {
+    index.definition_lines.get(&file)?.get(function).copied()
 }
 
 #[cfg(test)]
@@ -1865,19 +2487,173 @@ mod tests {
     }
 
     #[test]
-    fn finds_elixir_function_macro_guard_and_delegate_targets() {
+    fn resolves_erlang_remote_imported_and_function_reference_calls() {
         let directory = tempfile::tempdir().unwrap();
-        let source = directory.path().join("targets.ex");
         fs::write(
-            &source,
-            "def run(), do: :ok\ndefmacro build(value), do: value\ndefguard valid(value) when is_atom(value)\ndefdelegate fetch(value), to: Other\n",
+            directory.path().join("a.erl"),
+            "-module(a).\n-import(b, [imported/0]).\nrun() ->\n  b:remote(),\n  imported(),\n  fun b:callback/1,\n  Text = \"b:fake()\",\n  Text. % b:comment()\n",
         )
         .unwrap();
+        fs::write(
+            directory.path().join("b.erl"),
+            "-module(b).\nremote() -> ok.\nimported() -> ok.\ncallback(_) -> ok.\n",
+        )
+        .unwrap();
+        let mut atlas = Atlas {
+            root_path: directory.path().to_path_buf(),
+            revision: "test".to_owned(),
+            dirty: true,
+            excluded_test_files: 0,
+            excluded_hidden_files: 0,
+            excluded_custom_files: 0,
+            excluded_paths: Vec::new(),
+            nodes: vec![
+                Node {
+                    id: 0,
+                    parent: None,
+                    children: vec![1, 2],
+                    kind: NodeKind::Directory,
+                    name: "fixture".to_owned(),
+                    path: String::new(),
+                    depth: 0,
+                    bytes: 2,
+                    loc: 2,
+                    commits: 2,
+                    weight: 2.0,
+                    language: "directory".to_owned(),
+                    rect: Rect::default(),
+                },
+                Node {
+                    id: 1,
+                    parent: Some(0),
+                    children: Vec::new(),
+                    kind: NodeKind::File,
+                    name: "a.erl".to_owned(),
+                    path: "a.erl".to_owned(),
+                    depth: 1,
+                    bytes: 1,
+                    loc: 8,
+                    commits: 1,
+                    weight: 1.0,
+                    language: "erlang".to_owned(),
+                    rect: Rect::default(),
+                },
+                Node {
+                    id: 2,
+                    parent: Some(0),
+                    children: Vec::new(),
+                    kind: NodeKind::File,
+                    name: "b.erl".to_owned(),
+                    path: "b.erl".to_owned(),
+                    depth: 1,
+                    bytes: 1,
+                    loc: 4,
+                    commits: 1,
+                    weight: 1.0,
+                    language: "erlang".to_owned(),
+                    rect: Rect::default(),
+                },
+            ],
+            calls: Vec::new(),
+            path_to_id: HashMap::from([("a.erl".to_owned(), 1), ("b.erl".to_owned(), 2)]),
+            report: AnalyzerReport::default(),
+            timings: BuildTimings::default(),
+        };
+        let mut next_id = 0;
+        initialize_language_coverage(&mut atlas);
+        analyze_erlang_calls(&mut atlas, &ElixirSourceIndex::default(), &mut next_id).unwrap();
 
-        assert_eq!(definition_line(&source, "run"), Some(1));
-        assert_eq!(definition_line(&source, "build"), Some(2));
-        assert_eq!(definition_line(&source, "valid"), Some(3));
-        assert_eq!(definition_line(&source, "fetch"), Some(4));
+        assert_eq!(atlas.report.erlang_files_scanned, 2);
+        assert_eq!(atlas.report.erlang_calls, 3);
+        assert_eq!(atlas.calls.len(), 3);
+        assert!(atlas.calls.iter().all(|call| call.source == 1));
+        assert!(atlas.calls.iter().all(|call| call.target == 2));
+        assert_eq!(atlas.report.language_coverage["erlang"].files_analyzed, 2);
+        assert_eq!(
+            atlas.report.language_coverage["erlang"].callsites_resolved,
+            3
+        );
+        assert!(atlas.calls.iter().any(|call| call.callee == "b:remote"));
+        assert!(atlas.calls.iter().any(|call| call.callee == "b:imported"));
+        assert!(atlas.calls.iter().any(|call| call.callee == "b:callback"));
+    }
+
+    #[test]
+    fn finds_elixir_function_macro_guard_and_delegate_targets() {
+        let definitions = index_elixir_definition_lines(
+            "def run(), do: :ok\ndefmacro build(value), do: value\ndefguard valid(value) when is_atom(value)\ndefdelegate fetch(value), to: Other\n",
+        );
+
+        assert_eq!(definitions.get("run"), Some(&1));
+        assert_eq!(definitions.get("build"), Some(&2));
+        assert_eq!(definitions.get("valid"), Some(&3));
+        assert_eq!(definitions.get("fetch"), Some(&4));
+    }
+
+    #[test]
+    fn eex_templates_are_scanned_for_module_calls() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::create_dir_all(directory.path().join("templates")).unwrap();
+        fs::write(
+            directory.path().join("templates/show.eex"),
+            "<%= Demo.run() %>\n",
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("demo.ex"),
+            "defmodule Demo do\n  def run(), do: :ok\nend\n",
+        )
+        .unwrap();
+        let mut template = rust_node(1, "templates/show.eex");
+        template.language = "elixir".to_owned();
+        let mut target = rust_node(2, "demo.ex");
+        target.language = "elixir".to_owned();
+        let mut atlas = Atlas {
+            root_path: directory.path().to_path_buf(),
+            revision: "test".to_owned(),
+            dirty: true,
+            excluded_test_files: 0,
+            excluded_hidden_files: 0,
+            excluded_custom_files: 0,
+            excluded_paths: Vec::new(),
+            nodes: vec![
+                Node {
+                    id: 0,
+                    parent: None,
+                    children: vec![1, 2],
+                    kind: NodeKind::Directory,
+                    name: "fixture".to_owned(),
+                    path: String::new(),
+                    depth: 0,
+                    bytes: 2,
+                    loc: 2,
+                    commits: 2,
+                    weight: 2.0,
+                    language: "directory".to_owned(),
+                    rect: Rect::default(),
+                },
+                template,
+                target,
+            ],
+            calls: Vec::new(),
+            path_to_id: HashMap::new(),
+            report: AnalyzerReport::default(),
+            timings: BuildTimings::default(),
+        };
+        let index = ElixirSourceIndex {
+            module_files: HashMap::from([("Demo".to_owned(), 2)]),
+            definition_lines: HashMap::from([(2, HashMap::from([("run".to_owned(), 2)]))]),
+        };
+        let mut next_id = 0;
+        initialize_language_coverage(&mut atlas);
+
+        analyze_elixir_scripts_fallback(&mut atlas, &index, &mut next_id).unwrap();
+
+        assert_eq!(atlas.report.elixir_script_files_scanned, 1);
+        assert_eq!(atlas.calls.len(), 1);
+        assert_eq!(atlas.calls[0].source, 1);
+        assert_eq!(atlas.calls[0].target, 2);
+        assert_eq!(atlas.calls[0].target_line, Some(2));
     }
 
     #[test]
@@ -2006,7 +2782,7 @@ mod tests {
     }
 
     #[test]
-    fn clean_revision_cache_round_trips_calls_by_path() {
+    fn dirty_worktree_cache_round_trips_calls_by_path() {
         let directory = tempfile::tempdir().unwrap();
         assert!(
             Command::new("git")
@@ -2041,7 +2817,7 @@ mod tests {
         let mut atlas = Atlas {
             root_path: directory.path().to_path_buf(),
             revision: "abc123".to_owned(),
-            dirty: false,
+            dirty: true,
             excluded_test_files: 0,
             excluded_hidden_files: 0,
             excluded_custom_files: 0,

@@ -5,8 +5,9 @@
 [![docs.rs](https://img.shields.io/docsrs/code-atlas)](https://docs.rs/code-atlas)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE-MIT)
 
-Renders an architectural map for a code repo.
-Files and directories are renderes on a treemap, overlayed by (method/function) calls between them as a hierarchical edge bundled callgraph.
+Code Atlas renders an architectural map of a code repository. Files and
+directories form a data-driven treemap, overlaid with a hierarchically bundled
+call graph of method and function callsites.
 
 | light | dark |
 | --- | --- |
@@ -44,7 +45,8 @@ code-atlas render \
 
 Open `atlas.html` directly or put that single file on any static host. It embeds
 the map, calls, light and dark themes, filters, and viewer code; it makes no
-runtime network requests.
+runtime network requests. The architectural payload is losslessly compressed,
+and a modern browser reconstructs the derived spline samples when opening it.
 
 Create an A2 landscape poster with a higher-resolution call layer:
 
@@ -52,6 +54,7 @@ Create an A2 landscape poster with a higher-resolution call layer:
 code-atlas render \
   --repo /path/to/checkout \
   --output atlas.pdf \
+  --calls-in apps/billing \
   --width 7016 --height 4961 \
   --theme night --backend wgpu \
   --pdf-dpi 300 --pdf-call-dpi 600 \
@@ -70,6 +73,9 @@ Useful controls:
 | `--theme architect\|night\|ink\|solarized-dark\|solarized-light` | Choose the static-output appearance. HTML always embeds light and dark. |
 | `--backend software\|wgpu` | Choose the call renderer. Unsupported GPUs fall back to software. |
 | `--exclude PATH` | Exclude a repository-relative prefix; repeat as needed. |
+| `--calls-in PATH` | Keep calls with either endpoint below a repository-relative prefix; repeat to match any prefix. |
+| `--calls-from PATH` | Keep calls whose source is below a repository-relative prefix; repeat to match any prefix. |
+| `--calls-to PATH` | Keep calls whose target is below a repository-relative prefix; repeat to match any prefix. |
 | `--include-tests` | Include conventional test paths, excluded by default. |
 | `--include-hidden` | Include dotfiles and dot-directories, excluded by default. |
 
@@ -111,7 +117,8 @@ code-atlas render \
 
 | Language | Preferred analysis | Fallback |
 | --- | --- | --- |
-| Elixir | `mix xref trace` | conservative parsing for scripts |
+| Elixir (`.ex`, `.exs`, `.eex`) | compiled BEAM debug data | `mix xref trace` plus compiler-backed parsing for scripts and EEx templates |
+| Erlang (`.erl`) | static in-repository remote calls, function references, and imports | - |
 | Rust | rust-analyzer SCIP | uniquely resolved syntax calls |
 | TypeScript / JavaScript | scip-typescript | relative-import calls |
 | Gleam | explicit-import resolution | - |
@@ -129,6 +136,9 @@ Dynamic dispatch, macros, reflection, and generated code prevent any static tool
 from seeing every runtime call. Same-file calls are intentionally excluded. The
 JSON report records analyzer coverage, unresolved calls, exclusions, the Git
 revision, dirty-worktree state, renderer, and timing information.
+
+Semantic analysis is cached under `.git/code-atlas/`; endpoint filters reuse it,
+so experimenting with sub-domain posters does not repeat parsing.
 
 ## Security and privacy
 

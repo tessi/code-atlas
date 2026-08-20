@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 use code_atlas::{
     BuildOptions, build_atlas,
     layout::LayoutOptions,
-    model::Metric,
+    model::{CallPathFilters, Metric},
     render::{RenderBackend, RenderOptions, Theme},
     render_atlas,
 };
@@ -79,6 +79,9 @@ struct RenderArgs {
     #[arg(long = "exclude", value_name = "PATH")]
     excluded_paths: Vec<String>,
 
+    #[command(flatten)]
+    call_filters: CallFilterArgs,
+
     /// Deterministic seed for paper grain and pencil stroke texture.
     #[arg(long, default_value_t = 932)]
     texture_seed: u64,
@@ -90,9 +93,9 @@ struct RenderArgs {
     #[arg(long, default_value_t = 34)]
     call_opacity: u8,
 
-    /// Disable automatic per-stroke exposure reduction on very dense graphs.
-    #[arg(long)]
-    fixed_call_opacity: bool,
+    /// Disable automatic exposure adjustment, optionally using this opacity (0-255).
+    #[arg(long, value_name = "OPACITY", num_args = 0..=1)]
+    fixed_call_opacity: Option<Option<u8>>,
 
     /// Pencil stroke width in 1080p design pixels.
     #[arg(long, default_value_t = 1.10)]
@@ -149,6 +152,27 @@ struct InspectArgs {
     /// Exclude a repository-relative file or directory. Repeat as needed.
     #[arg(long = "exclude", value_name = "PATH")]
     excluded_paths: Vec<String>,
+
+    #[command(flatten)]
+    call_filters: CallFilterArgs,
+}
+
+#[derive(Debug, Default, clap::Args)]
+struct CallFilterArgs {
+    /// Keep calls whose source is this repository-relative file or directory.
+    /// Repeat to match any source prefix.
+    #[arg(long = "calls-from", value_name = "PATH")]
+    sources: Vec<String>,
+
+    /// Keep calls whose target is this repository-relative file or directory.
+    /// Repeat to match any target prefix.
+    #[arg(long = "calls-to", value_name = "PATH")]
+    targets: Vec<String>,
+
+    /// Keep calls with either endpoint in this repository-relative file or
+    /// directory. Repeat to match any endpoint prefix.
+    #[arg(long = "calls-in", value_name = "PATH")]
+    paths: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -164,6 +188,8 @@ struct Report<'a> {
     directories: usize,
     total_loc: u64,
     callsites: usize,
+    callsites_before_filter: usize,
+    call_filters: &'a CallPathFilters,
     same_file_calls_excluded: usize,
     analyzer: &'a code_atlas::model::AnalyzerReport,
     timings: &'a code_atlas::model::BuildTimings,
@@ -192,6 +218,7 @@ fn render(args: RenderArgs) -> Result<()> {
     {
         anyhow::bail!("--resume and --restart are available only for PDF output");
     }
+    let (call_opacity, density_aware_exposure) = call_exposure(&args);
     eprintln!("Scanning {}…", args.repo.display());
     let mut atlas = build_atlas(
         &args.repo,
@@ -203,14 +230,18 @@ fn render(args: RenderArgs) -> Result<()> {
             excluded_paths: args.excluded_paths,
         },
     )?;
+    let calls_before_filter = atlas.calls.len();
+    let call_filters = args.call_filters.normalized()?;
+    let calls_filtered = atlas.filter_calls(&call_filters);
     eprintln!(
-        "Found {} files ({} test, {} hidden, and {} custom-path files excluded) and {} cross-file callsites ({} same-file callsites excluded); rendering every retained callsite…",
+        "Found {} files ({} test, {} hidden, and {} custom-path files excluded) and {} cross-file callsites ({} same-file and {} endpoint-filtered callsites excluded); rendering every retained callsite…",
         atlas.files().count(),
         atlas.excluded_test_files,
         atlas.excluded_hidden_files,
         atlas.excluded_custom_files,
         atlas.calls.len(),
-        atlas.report.same_file_calls_excluded
+        atlas.report.same_file_calls_excluded,
+        calls_filtered,
     );
 
     let layout_options = LayoutOptions {
@@ -225,9 +256,9 @@ fn render(args: RenderArgs) -> Result<()> {
         backend,
         theme,
         source_url_template: args.source_url_template.clone(),
-        call_opacity: args.call_opacity,
+        call_opacity,
         call_width: args.call_width,
-        density_aware_exposure: !args.fixed_call_opacity,
+        density_aware_exposure,
         pdf_dpi: args.pdf_dpi,
         pdf_call_dpi: args.pdf_call_dpi,
         pdf_call_tile_size: args.pdf_call_tile_size,
@@ -279,7 +310,7 @@ fn render(args: RenderArgs) -> Result<()> {
         }
     }
 
-    let report = report(&atlas, Some(&stats));
+    let report = report(&atlas, Some(&stats), calls_before_filter, &call_filters);
     let report_path = args.output.with_file_name(format!(
         "{}.report.json",
         args.output
@@ -298,8 +329,17 @@ fn render(args: RenderArgs) -> Result<()> {
     Ok(())
 }
 
+fn call_exposure(args: &RenderArgs) -> (u8, bool) {
+    (
+        args.fixed_call_opacity
+            .flatten()
+            .unwrap_or(args.call_opacity),
+        args.fixed_call_opacity.is_none(),
+    )
+}
+
 fn inspect(args: InspectArgs) -> Result<()> {
-    let atlas = build_atlas(
+    let mut atlas = build_atlas(
         &args.repo,
         &BuildOptions {
             metric: args.metric.parse()?,
@@ -309,13 +349,27 @@ fn inspect(args: InspectArgs) -> Result<()> {
             excluded_paths: args.excluded_paths,
         },
     )?;
-    println!("{}", serde_json::to_string_pretty(&report(&atlas, None))?);
+    let calls_before_filter = atlas.calls.len();
+    let call_filters = args.call_filters.normalized()?;
+    atlas.filter_calls(&call_filters);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report(&atlas, None, calls_before_filter, &call_filters,))?
+    );
     Ok(())
+}
+
+impl CallFilterArgs {
+    fn normalized(&self) -> Result<CallPathFilters> {
+        CallPathFilters::new(&self.sources, &self.targets, &self.paths)
+    }
 }
 
 fn report<'a>(
     atlas: &'a code_atlas::model::Atlas,
     render: Option<&'a code_atlas::render::RenderStats>,
+    callsites_before_filter: usize,
+    call_filters: &'a CallPathFilters,
 ) -> Report<'a> {
     Report {
         repository: atlas.root_path.display().to_string(),
@@ -329,10 +383,51 @@ fn report<'a>(
         directories: atlas.nodes.iter().filter(|node| !node.is_file()).count(),
         total_loc: atlas.total_loc(),
         callsites: atlas.calls.len(),
+        callsites_before_filter,
+        call_filters,
         same_file_calls_excluded: atlas.report.same_file_calls_excluded,
         analyzer: &atlas.report,
         timings: &atlas.timings,
         render,
-        invariant: "one retained cross-file callsite equals one line-addressed rendered spline; same-file calls are excluded; no aggregation or sampling",
+        invariant: "one retained cross-file callsite equals one line-addressed rendered spline; same-file and CLI-filtered calls are excluded; no aggregation or sampling",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn render_args(extra: &[&str]) -> RenderArgs {
+        let mut arguments = vec!["code-atlas", "render", "--repo", "."];
+        arguments.extend_from_slice(extra);
+        match Cli::try_parse_from(arguments).unwrap().command {
+            Command::Render(args) => args,
+            Command::Inspect(_) => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn fixed_call_opacity_accepts_an_optional_manual_value() {
+        assert_eq!(call_exposure(&render_args(&[])), (34, true));
+        assert_eq!(
+            call_exposure(&render_args(&["--fixed-call-opacity"])),
+            (34, false)
+        );
+        assert_eq!(
+            call_exposure(&render_args(&["--fixed-call-opacity", "72"])),
+            (72, false)
+        );
+    }
+
+    #[test]
+    fn bare_fixed_call_opacity_preserves_the_separate_call_opacity_option() {
+        assert_eq!(
+            call_exposure(&render_args(&[
+                "--call-opacity",
+                "61",
+                "--fixed-call-opacity",
+            ])),
+            (61, false)
+        );
     }
 }

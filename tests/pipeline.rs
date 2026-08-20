@@ -161,6 +161,7 @@ fn line_addressed_routes_remain_individual_splines() {
     let pdf = std::fs::read(pdf_output).unwrap();
     assert_eq!(svg.matches("<image id=\"call-density\"").count(), 1);
     assert!(svg.contains("<g id=\"labels\""));
+    assert!(svg.contains("<g id=\"direction-legend\""));
     assert!(svg.find("call-density").unwrap() < svg.find("id=\"labels\"").unwrap());
     assert!(pdf.starts_with(b"%PDF-1.7"));
     assert!(

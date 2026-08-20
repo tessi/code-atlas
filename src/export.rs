@@ -329,8 +329,47 @@ fn write_svg(
             }
         }
     }
+    svg_direction_legend(&mut svg, atlas.nodes[0].rect, layout, palette);
     svg.push_str("</g>\n</svg>\n");
     fs::write(output, svg).with_context(|| format!("cannot save {}", output.display()))
+}
+
+fn svg_direction_legend(output: &mut String, root: Rect, layout: &LayoutOptions, palette: Palette) {
+    let scale = (layout.width.min(layout.height) as f32 / 1080.0).max(0.55);
+    let size = 8.5 * scale;
+    let baseline = (root.y1 as f32 + 17.0 * scale).min(layout.height as f32 - 5.0 * scale);
+    let glyph_width = size * 0.6;
+    let label_width = glyph_width * 6.0;
+    let gap = 5.0 * scale;
+    let line_width = 42.0 * scale;
+    let total_width = label_width * 2.0 + gap * 2.0 + line_width;
+    let x = root.center().x as f32 - total_width * 0.5;
+    let line_x = x + label_width + gap;
+    let line_y = baseline - size * 0.36;
+    let mut text_color = palette.label;
+    text_color.a = text_color.a.saturating_mul(3) / 4;
+    let text = svg_color(text_color);
+    let opacity = text_color.a as f32 / 255.0;
+    output.push_str(&format!(
+        "<g id=\"direction-legend\" aria-label=\"Call direction from source to target\"><text x=\"{x:.3}\" y=\"{baseline:.3}\" font-size=\"{size:.3}\" fill=\"{text}\" fill-opacity=\"{opacity:.4}\">source</text>\n"
+    ));
+    const SEGMENTS: usize = 12;
+    for segment in 0..SEGMENTS {
+        let t = segment as f32 / (SEGMENTS - 1) as f32;
+        let color = mix_color(palette.direction_source, palette.direction_target, t);
+        let segment_x = line_x + line_width * segment as f32 / SEGMENTS as f32;
+        output.push_str(&format!(
+            "<rect x=\"{segment_x:.3}\" y=\"{:.3}\" width=\"{:.3}\" height=\"{:.3}\" fill=\"{}\"/>\n",
+            line_y - scale,
+            line_width / SEGMENTS as f32 + 0.2,
+            2.0 * scale,
+            svg_color(color),
+        ));
+    }
+    output.push_str(&format!(
+        "<text x=\"{:.3}\" y=\"{baseline:.3}\" font-size=\"{size:.3}\" fill=\"{text}\" fill-opacity=\"{opacity:.4}\">target</text></g>\n",
+        line_x + line_width + gap,
+    ));
 }
 
 fn svg_rect(output: &mut String, rect: Rect, fill: Rgba, stroke: Option<Rgba>, width: f32) {
@@ -730,15 +769,52 @@ fn write_tiled_pdf(output: &Path, scene: &PdfScene<'_>) -> Result<TiledPdfStats>
     let content = pdf_content(scene, &tiles, scale);
     let content = deflate(content.as_bytes())?;
 
-    let font_id = 4 + tiles.len() * 2;
+    let architectural = matches!(render.theme, Theme::Architect | Theme::Night);
+    let graphics_state_start = 4 + tiles.len() * 2;
+    let pencil_graphics_states = if architectural {
+        vec![
+            (
+                "FilePencil",
+                pdf_pencil_graphics_state(
+                    scene.palette.file_border,
+                    2,
+                    pdf_pencil_blend_mode(render.theme),
+                ),
+            ),
+            (
+                "DirectoryPencil",
+                pdf_pencil_graphics_state(
+                    scene.palette.directory_border,
+                    3,
+                    pdf_pencil_blend_mode(render.theme),
+                ),
+            ),
+            (
+                "OuterPencil",
+                pdf_pencil_graphics_state(
+                    scene.palette.outer_border,
+                    3,
+                    pdf_pencil_blend_mode(render.theme),
+                ),
+            ),
+        ]
+    } else {
+        Vec::new()
+    };
+    let font_id = graphics_state_start + pencil_graphics_states.len();
     let content_id = font_id + 1;
     let mut xobjects = String::new();
     for index in 0..tiles.len() {
         let rgb_id = 4 + index * 2;
         xobjects.push_str(&format!("/Calls{index} {rgb_id} 0 R "));
     }
+    let mut ext_graphics_states = String::new();
+    for (offset, (name, _)) in pencil_graphics_states.iter().enumerate() {
+        let id = graphics_state_start + offset;
+        ext_graphics_states.push_str(&format!("/{name} {id} 0 R "));
+    }
     let page = format!(
-        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {page_width:.4} {page_height:.4}] /Resources << /XObject << {xobjects}>> /Font << /Mono {font_id} 0 R >> >> /Contents {content_id} 0 R >>"
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {page_width:.4} {page_height:.4}] /Resources << /XObject << {xobjects}>> /ExtGState << {ext_graphics_states}>> /Font << /Mono {font_id} 0 R >> >> /Contents {content_id} 0 R >>"
     );
     let assembly_started = Instant::now();
     let temporary_pdf = atomic_temporary_path(output);
@@ -767,6 +843,9 @@ fn write_tiled_pdf(output: &Path, scene: &PdfScene<'_>) -> Result<TiledPdfStats>
             ),
             &compressed.alpha,
         )?;
+    }
+    for (_, graphics_state) in pencil_graphics_states {
+        pdf.write_object(graphics_state.as_bytes())?;
     }
     pdf.write_object(
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>",
@@ -1222,7 +1301,7 @@ fn pdf_content(scene: &PdfScene<'_>, call_tiles: &[CallTile], scale: f64) -> Str
                 node.rect,
                 VectorPencil {
                     color: palette.file_border,
-                    backdrop,
+                    graphics_state: "FilePencil",
                     width,
                     seed: node.id as u64 ^ layout.texture_seed,
                     amplitude: 0.24 * drawing_scale as f64,
@@ -1256,7 +1335,7 @@ fn pdf_content(scene: &PdfScene<'_>, call_tiles: &[CallTile], scale: f64) -> Str
                 node.rect,
                 VectorPencil {
                     color: palette.directory_border,
-                    backdrop: palette.land,
+                    graphics_state: "DirectoryPencil",
                     width,
                     seed: node.id as u64 ^ 0xd1ec_7000,
                     amplitude: 0.34 * drawing_scale as f64,
@@ -1283,7 +1362,7 @@ fn pdf_content(scene: &PdfScene<'_>, call_tiles: &[CallTile], scale: f64) -> Str
             atlas.nodes[0].rect,
             VectorPencil {
                 color: palette.outer_border,
-                backdrop: palette.background,
+                graphics_state: "OuterPencil",
                 width: outer_width,
                 seed: layout.texture_seed ^ 0xc0a5_7000,
                 amplitude: 0.28 * drawing_scale as f64,
@@ -1341,7 +1420,73 @@ fn pdf_content(scene: &PdfScene<'_>, call_tiles: &[CallTile], scale: f64) -> Str
             }
         }
     }
+    pdf_direction_legend(&mut content, atlas.nodes[0].rect, layout, palette, scale);
     content
+}
+
+fn pdf_direction_legend(
+    output: &mut String,
+    root: Rect,
+    layout: &LayoutOptions,
+    palette: Palette,
+    pdf_scale: f64,
+) {
+    let design_scale = (layout.width.min(layout.height) as f32 / 1080.0).max(0.55);
+    let size = 8.5 * design_scale;
+    let baseline =
+        (root.y1 as f32 + 17.0 * design_scale).min(layout.height as f32 - 5.0 * design_scale);
+    let glyph_width = size * 0.6;
+    let label_width = glyph_width * 6.0;
+    let gap = 5.0 * design_scale;
+    let line_width = 42.0 * design_scale;
+    let total_width = label_width * 2.0 + gap * 2.0 + line_width;
+    let x = root.center().x as f32 - total_width * 0.5;
+    let line_x = x + label_width + gap;
+    let line_y = baseline - size * 0.36;
+    let mut text_color = palette.label;
+    text_color.a = text_color.a.saturating_mul(3) / 4;
+    let text_color = flatten_alpha(text_color, palette.background);
+    let (r, g, b) = pdf_rgb(text_color);
+    let size = size as f64 * pdf_scale;
+    let text_y = (layout.height as f64 - baseline as f64) * pdf_scale;
+    output.push_str(&format!(
+        "BT /Mono {size:.4} Tf {r:.5} {g:.5} {b:.5} rg 1 0 0 1 {:.4} {text_y:.4} Tm (source) Tj ET\n",
+        x as f64 * pdf_scale,
+    ));
+    const SEGMENTS: usize = 12;
+    for segment in 0..SEGMENTS {
+        let t = segment as f32 / (SEGMENTS - 1) as f32;
+        let color = mix_color(palette.direction_source, palette.direction_target, t);
+        let (r, g, b) = pdf_rgb(color);
+        let x0 = line_x + line_width * segment as f32 / SEGMENTS as f32;
+        let x1 = line_x + line_width * (segment + 1) as f32 / SEGMENTS as f32;
+        output.push_str(&format!(
+            "{r:.5} {g:.5} {b:.5} RG {:.4} w 1 J {:.4} {:.4} m {:.4} {:.4} l S\n",
+            2.0 * design_scale as f64 * pdf_scale,
+            x0 as f64 * pdf_scale,
+            (layout.height as f64 - line_y as f64) * pdf_scale,
+            x1 as f64 * pdf_scale,
+            (layout.height as f64 - line_y as f64) * pdf_scale,
+        ));
+    }
+    output.push_str(&format!(
+        "BT /Mono {size:.4} Tf {r:.5} {g:.5} {b:.5} rg 1 0 0 1 {:.4} {text_y:.4} Tm (target) Tj ET\n",
+        (line_x + line_width + gap) as f64 * pdf_scale,
+    ));
+}
+
+fn mix_color(source: Rgba, target: Rgba, amount: f32) -> Rgba {
+    let mix = |left: u8, right: u8| {
+        (left as f32 + (right as f32 - left as f32) * amount)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    Rgba::with_alpha(
+        mix(source.r, target.r),
+        mix(source.g, target.g),
+        mix(source.b, target.b),
+        mix(source.a, target.a),
+    )
 }
 
 fn pdf_hollow_heart(
@@ -1413,7 +1558,7 @@ fn pdf_fill_rect(output: &mut String, rect: Rect, color: Rgba, height: u32, scal
 #[derive(Clone, Copy)]
 struct VectorPencil {
     color: Rgba,
-    backdrop: Rgba,
+    graphics_state: &'static str,
     width: f32,
     seed: u64,
     amplitude: f64,
@@ -1428,13 +1573,12 @@ fn pdf_pencil_rect(output: &mut String, rect: Rect, pencil: VectorPencil, height
             pencil.seed ^ pass as u64,
             pencil.amplitude * (pass + 1) as f64,
         );
-        let mut color = pencil.color;
-        color.a = ((color.a as usize / pencil.passes.max(1)).max(1) as u8).saturating_add(5);
         pdf_stroke_path(
             output,
             &points,
-            flatten_alpha(color, pencil.backdrop),
+            pencil.color,
             pencil.width * (0.78 + pass as f32 * 0.13),
+            pencil.graphics_state,
             height,
             scale,
         );
@@ -1446,6 +1590,7 @@ fn pdf_stroke_path(
     points: &[Point],
     color: Rgba,
     width: f32,
+    graphics_state: &str,
     height: u32,
     scale: f64,
 ) {
@@ -1454,7 +1599,7 @@ fn pdf_stroke_path(
     };
     let (r, g, b) = pdf_rgb(color);
     output.push_str(&format!(
-        "{r:.5} {g:.5} {b:.5} RG {:.4} w 1 J 1 j {:.4} {:.4} m ",
+        "q /{graphics_state} gs {r:.5} {g:.5} {b:.5} RG {:.4} w 1 J 1 j {:.4} {:.4} m ",
         width as f64 * scale,
         first.x * scale,
         (height as f64 - first.y) * scale
@@ -1466,7 +1611,24 @@ fn pdf_stroke_path(
             (height as f64 - point.y) * scale
         ));
     }
-    output.push_str("h S\n");
+    output.push_str("h S Q\n");
+}
+
+fn pdf_pencil_pass_alpha(color: Rgba, passes: usize) -> u8 {
+    ((color.a as usize / passes.max(1)).max(1) as u8).saturating_add(5)
+}
+
+fn pdf_pencil_blend_mode(theme: Theme) -> &'static str {
+    match theme {
+        Theme::Architect => "Multiply",
+        Theme::Night => "Screen",
+        _ => "Normal",
+    }
+}
+
+fn pdf_pencil_graphics_state(color: Rgba, passes: usize, blend_mode: &str) -> String {
+    let alpha = f64::from(pdf_pencil_pass_alpha(color, passes)) / 255.0;
+    format!("<< /Type /ExtGState /BM /{blend_mode} /CA {alpha:.6} /ca {alpha:.6} /AIS false >>")
 }
 
 fn pdf_stroke_rect(
@@ -1659,6 +1821,71 @@ mod tests {
     fn xml_and_pdf_text_are_escaped() {
         assert_eq!(xml_escape("a&<b"), "a&amp;&lt;b");
         assert_eq!(pdf_escape("a(b)\\c"), "a\\(b\\)\\\\c");
+    }
+
+    #[test]
+    fn pdf_direction_legend_labels_the_color_ramp() {
+        let layout = LayoutOptions {
+            width: 1920,
+            height: 1080,
+            ..LayoutOptions::default()
+        };
+        let root = Rect {
+            x0: 49.0,
+            y0: 49.0,
+            x1: 1871.0,
+            y1: 1031.0,
+        };
+        let mut content = String::new();
+
+        pdf_direction_legend(
+            &mut content,
+            root,
+            &layout,
+            Palette::for_theme(Theme::Architect),
+            0.5,
+        );
+
+        assert!(content.contains("(source) Tj"));
+        assert!(content.contains("(target) Tj"));
+        assert_eq!(content.matches(" l S").count(), 12);
+    }
+
+    #[test]
+    fn pdf_pencil_strokes_keep_transparency_and_multiply_blending() {
+        let palette = Palette::for_theme(Theme::Architect);
+        let graphics_state = pdf_pencil_graphics_state(
+            palette.file_border,
+            2,
+            pdf_pencil_blend_mode(Theme::Architect),
+        );
+        assert!(graphics_state.contains("/BM /Multiply"));
+        assert!(graphics_state.contains("/CA 0.113725"));
+
+        let mut content = String::new();
+        pdf_pencil_rect(
+            &mut content,
+            Rect {
+                x0: 10.0,
+                y0: 20.0,
+                x1: 110.0,
+                y1: 70.0,
+            },
+            VectorPencil {
+                color: palette.file_border,
+                graphics_state: "FilePencil",
+                width: 1.0,
+                seed: 42,
+                amplitude: 0.25,
+                passes: 2,
+            },
+            100,
+            1.0,
+        );
+
+        assert_eq!(content.matches("q /FilePencil gs").count(), 2);
+        assert_eq!(content.matches("h S Q").count(), 2);
+        assert!(content.contains("0.26667 0.26667 0.25098 RG"));
     }
 
     #[test]

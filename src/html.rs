@@ -3,20 +3,21 @@ use std::{fs, path::Path, time::Instant};
 use anyhow::{Context, Result, ensure};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::Serialize;
+use zlib_rs::{DeflateConfig, ReturnCode, compress_bound, compress_slice};
 
 use crate::{
-    layout::{LayoutOptions, call_curve},
+    layout::LayoutOptions,
     model::{Atlas, Node, NodeKind, Rect},
     render::{
-        LabelPlacement, Palette, RenderOptions, RenderStats, Rgba, collect_label_commands,
-        optical_density_description,
+        DENSE_EXPOSURE_EXPONENT, DENSITY_KNEE_MULTIPLIER, LabelPlacement, Palette, RenderOptions,
+        RenderStats, Rgba, collect_label_commands, optical_density_description,
     },
 };
 
 const VIEWER_TEMPLATE: &str = include_str!("viewer.html");
 const VIEWER_WEBGPU: &str = include_str!("viewer_webgpu.js");
-const CURVE_QUANTIZATION_MAX: f64 = u16::MAX as f64;
 const INTERACTIVE_MAX_CALL_OPACITY: f64 = 160.0;
+const HTML_DEFLATE_LEVEL: i32 = 9;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -35,12 +36,12 @@ struct ViewerData {
     density_aware_exposure: bool,
     density_reference_calls: usize,
     call_width: f32,
+    bundle_strength: f64,
     themes: ViewerThemes,
     files: Vec<ViewerFile>,
     directories: Vec<ViewerDirectory>,
     labels: Vec<ViewerLabel>,
     calls: Vec<ViewerCall>,
-    curve_points_base64: String,
 }
 
 #[derive(Serialize)]
@@ -74,6 +75,7 @@ struct ViewerPalette {
 #[derive(Serialize)]
 struct ViewerFile {
     id: usize,
+    parent: Option<usize>,
     path: String,
     name: String,
     language: String,
@@ -89,6 +91,7 @@ struct ViewerFile {
 #[derive(Serialize)]
 struct ViewerDirectory {
     id: usize,
+    parent: Option<usize>,
     name: String,
     path: String,
     depth: usize,
@@ -115,9 +118,6 @@ struct ViewerCall {
     target_line: Option<u32>,
     callee: String,
     analyzer: String,
-    point_start: usize,
-    point_count: usize,
-    bounds: [u16; 4],
 }
 
 pub(crate) fn render_interactive_html(
@@ -201,6 +201,7 @@ pub(crate) fn render_interactive_html(
         .filter(|node| node.kind == NodeKind::Directory)
         .map(|node| ViewerDirectory {
             id: node.id,
+            parent: node.parent,
             name: node.name.clone(),
             path: node.path.clone(),
             depth: node.depth,
@@ -208,30 +209,8 @@ pub(crate) fn render_interactive_html(
         })
         .collect();
 
-    let mut point_bytes = Vec::new();
     let mut calls = Vec::with_capacity(atlas.calls.len());
     for call in &atlas.calls {
-        let curve = call_curve(atlas, call, layout);
-        ensure!(
-            curve.len() >= 2,
-            "interactive call {} has fewer than two curve points",
-            call.id
-        );
-        let point_start = point_bytes.len() / 4;
-        let mut min_x = u16::MAX;
-        let mut min_y = u16::MAX;
-        let mut max_x = 0_u16;
-        let mut max_y = 0_u16;
-        for point in &curve {
-            let x = quantize(point.x, f64::from(layout.width));
-            let y = quantize(point.y, f64::from(layout.height));
-            min_x = min_x.min(x);
-            min_y = min_y.min(y);
-            max_x = max_x.max(x);
-            max_y = max_y.max(y);
-            point_bytes.extend_from_slice(&x.to_le_bytes());
-            point_bytes.extend_from_slice(&y.to_le_bytes());
-        }
         calls.push(ViewerCall {
             id: call.id,
             source: call.source,
@@ -240,14 +219,11 @@ pub(crate) fn render_interactive_html(
             target_line: call.target_line,
             callee: call.callee.clone(),
             analyzer: call.analyzer.clone(),
-            point_start,
-            point_count: curve.len(),
-            bounds: [min_x, min_y, max_x, max_y],
         });
     }
 
     let data = ViewerData {
-        version: 3,
+        version: 4,
         width: layout.width,
         height: layout.height,
         title: viewer_title(&atlas.nodes[0].name),
@@ -268,6 +244,7 @@ pub(crate) fn render_interactive_html(
         density_aware_exposure: render.density_aware_exposure,
         density_reference_calls: render.density_reference_calls,
         call_width: render.call_width,
+        bundle_strength: layout.bundle_strength,
         themes: ViewerThemes {
             light: ViewerTheme {
                 palette: viewer_palette(light_palette),
@@ -284,12 +261,14 @@ pub(crate) fn render_interactive_html(
         directories,
         labels,
         calls,
-        curve_points_base64: BASE64.encode(point_bytes),
     };
     let json = script_safe_json(&data)?;
+    let compressed = deflate(json.as_bytes())?;
+    let encoded = BASE64.encode(compressed);
     let html = VIEWER_TEMPLATE
         .replace("__CODE_ATLAS_WEBGPU__", VIEWER_WEBGPU)
-        .replace("__CODE_ATLAS_DATA__", &json);
+        .replace("__CODE_ATLAS_DATA_BYTES__", &json.len().to_string())
+        .replace("__CODE_ATLAS_DATA__", &encoded);
     fs::write(output, html.as_bytes())
         .with_context(|| format!("cannot save {}", output.display()))?;
     let output_bytes = fs::metadata(output)?.len();
@@ -335,15 +314,23 @@ fn interactive_call_opacity(call_count: usize, options: &RenderOptions) -> u8 {
         return options.call_opacity;
     }
     let reference_calls = options.density_reference_calls.max(1) as f64;
-    let exposure_scale = (reference_calls / call_count as f64).sqrt();
+    let full_strength_until = reference_calls * DENSITY_KNEE_MULTIPLIER as f64;
+    let exposure_scale = if (call_count as f64) < reference_calls {
+        (reference_calls / call_count as f64).powf(0.75)
+    } else if (call_count as f64) <= full_strength_until {
+        1.0
+    } else {
+        (full_strength_until / call_count as f64).powf(DENSE_EXPOSURE_EXPONENT)
+    };
     (f64::from(options.call_opacity) * exposure_scale)
         .round()
-        .clamp(2.0, INTERACTIVE_MAX_CALL_OPACITY) as u8
+        .clamp(1.0, INTERACTIVE_MAX_CALL_OPACITY) as u8
 }
 
 fn viewer_file(node: &Node, incoming: usize, outgoing: usize) -> ViewerFile {
     ViewerFile {
         id: node.id,
+        parent: node.parent,
         path: node.path.clone(),
         name: node.name.clone(),
         language: node.language.clone(),
@@ -375,11 +362,17 @@ fn rect_array(rect: Rect) -> [f64; 4] {
     [rect.x0, rect.y0, rect.x1, rect.y1]
 }
 
-fn quantize(value: f64, extent: f64) -> u16 {
-    if !value.is_finite() || extent <= 0.0 {
-        return 0;
-    }
-    (value.clamp(0.0, extent) / extent * CURVE_QUANTIZATION_MAX).round() as u16
+fn deflate(data: &[u8]) -> Result<Vec<u8>> {
+    let mut output = vec![0; compress_bound(data.len())];
+    let (compressed, result) =
+        compress_slice(&mut output, data, DeflateConfig::new(HTML_DEFLATE_LEVEL));
+    ensure!(
+        result == ReturnCode::Ok,
+        "interactive HTML data compression failed with {result:?}"
+    );
+    let compressed_len = compressed.len();
+    output.truncate(compressed_len);
+    Ok(output)
 }
 
 fn rgba_css(color: Rgba) -> String {
@@ -447,12 +440,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn curve_quantization_clamps_and_preserves_endpoints() {
-        assert_eq!(quantize(-1.0, 100.0), 0);
-        assert_eq!(quantize(0.0, 100.0), 0);
-        assert_eq!(quantize(50.0, 100.0), 32_768);
-        assert_eq!(quantize(100.0, 100.0), u16::MAX);
-        assert_eq!(quantize(101.0, 100.0), u16::MAX);
+    fn compressed_html_data_round_trips_losslessly() {
+        let input = b"atlas file and call metadata ".repeat(4_096);
+        let compressed = deflate(&input).unwrap();
+        let mut decoded = vec![0; input.len()];
+        let (decoded, result) =
+            zlib_rs::decompress_slice(&mut decoded, &compressed, zlib_rs::InflateConfig::default());
+        assert_eq!(result, ReturnCode::Ok);
+        assert_eq!(decoded, input);
     }
 
     #[test]
@@ -521,6 +516,7 @@ mod tests {
         )
         .unwrap();
         let html = fs::read_to_string(output).unwrap();
+        let json = embedded_json(&html);
         assert_eq!(stats.calls_drawn, atlas.calls.len());
         assert_eq!(
             stats.backend,
@@ -535,6 +531,8 @@ mod tests {
         assert!(html.contains("1.0 - exp(-deposited.a)"));
         assert!(html.contains("canvas2d-fallback"));
         assert!(html.contains("id=\"atlas-call-canvas\""));
+        assert!(html.contains("#atlas-tooltip span"));
+        assert!(html.contains("word-break: break-word"));
         assert!(!html.contains("__CODE_ATLAS_WEBGPU__"));
         assert!(html.contains("id=\"atlas-selected-call\""));
         assert!(html.contains("id=\"atlas-copy-link\""));
@@ -542,26 +540,35 @@ mod tests {
         assert!(html.contains("id=\"atlas-query-help\""));
         assert!(html.contains("id=\"atlas-layers\""));
         assert!(html.contains("id=\"atlas-theme-mode\""));
+        assert!(html.contains("id=\"atlas-search-button\""));
+        assert!(!html.contains("<form id=\"atlas-search\""));
+        assert!(html.contains("function runFileSearch()"));
+        assert!(html.contains("event.stopPropagation()"));
         assert!(html.contains("document.title = data.title;"));
         assert!(html.contains("code-atlas.theme.preference.v1"));
         assert!(html.contains("(prefers-color-scheme: dark)"));
-        assert!(html.contains("\"version\":3"));
-        assert!(!html.contains("\"confidence\":"));
+        assert!(html.contains("data-format=\"deflate-base64-v1\""));
+        assert!(html.contains("new DecompressionStream('deflate')"));
+        assert!(html.contains("async function buildCurvePoints"));
+        assert!(json.contains("\"version\":4"));
+        assert!(!json.contains("\"confidence\":"));
         assert!(!html.contains("call.confidence"));
         assert!(!html.contains("% confidence"));
-        assert!(html.contains("\"initialTheme\":\"dark\""));
-        assert!(html.contains("\"callOpacity\":34"));
-        assert!(html.contains("\"densityAwareExposure\":true"));
-        assert!(html.contains("\"densityReferenceCalls\":2500"));
+        assert!(json.contains("\"initialTheme\":\"dark\""));
+        assert!(json.contains("\"callOpacity\":34"));
+        assert!(json.contains("\"densityAwareExposure\":true"));
+        assert!(json.contains("\"densityReferenceCalls\":2500"));
+        assert!(json.contains("\"bundleStrength\":0.96"));
         assert!(html.contains("function adaptiveCallOpacity(callCount)"));
-        assert!(html.contains("Math.sqrt(referenceCalls / activeCalls)"));
+        assert!(html.contains("const fullStrengthUntil = referenceCalls * 4"));
+        assert!(html.contains("Math.pow(fullStrengthUntil / activeCalls, 1.05)"));
         assert!(html.contains("Math.min(160, baseOpacity * exposureScale)"));
         assert!(html.contains("const alpha = currentCallAlpha(drawnCalls)"));
         assert!(html.contains("currentCallAlpha(visibleCalls.length)"));
         assert!(html.contains("canvas.dataset.visibleCalls"));
-        assert!(html.contains("\"themes\":{\"light\""));
-        assert!(html.contains("rgba(241,238,229,1.0000)"));
-        assert!(html.contains("rgba(6,10,17,1.0000)"));
+        assert!(json.contains("\"themes\":{\"light\""));
+        assert!(json.contains("rgba(241,238,229,1.0000)"));
+        assert!(json.contains("rgba(6,10,17,1.0000)"));
         assert!(html.contains("id=\"atlas-active-query\""));
         assert!(html.contains("class=\"atlas-map-zoom\""));
         assert!(html.contains("Filter individual calls"));
@@ -570,8 +577,8 @@ mod tests {
         assert!(html.contains("function globMatches(value, pattern)"));
         assert!(html.contains("queryMask: new Uint8Array(data.calls.length).fill(1)"));
         assert!(html.contains("new URLSearchParams(window.location.hash.slice(1))"));
-        assert!(html.contains("\"sourceUrlTemplate\":null"));
-        assert!(html.contains("dangerous\\u003c/script\\u003e"));
+        assert!(json.contains("\"sourceUrlTemplate\":null"));
+        assert!(json.contains("dangerous\\u003c/script\\u003e"));
         assert!(!html.contains("https://"));
         assert!(!html.contains("fetch("));
         assert!(!html.contains("XMLHttpRequest"));
@@ -579,18 +586,22 @@ mod tests {
 
         // The generated page is independent of later atlas mutations.
         atlas.calls.clear();
-        assert!(html.contains("curvePointsBase64"));
+        assert!(json.contains("\"calls\":[{"));
+        assert!(!json.contains("curvePointsBase64"));
     }
 
     #[test]
     fn interactive_exposure_strengthens_sparse_filters_and_restrains_dense_ones() {
         let options = RenderOptions::default();
         assert_eq!(interactive_call_opacity(0, &options), 0);
-        assert_eq!(interactive_call_opacity(294, &options), 99);
+        assert_eq!(interactive_call_opacity(294, &options), 160);
         assert_eq!(interactive_call_opacity(100, &options), 160);
-        assert_eq!(interactive_call_opacity(1_317, &options), 47);
+        assert_eq!(interactive_call_opacity(1_317, &options), 55);
         assert_eq!(interactive_call_opacity(2_500, &options), 34);
-        assert_eq!(interactive_call_opacity(20_202, &options), 12);
+        assert_eq!(interactive_call_opacity(5_345, &options), 34);
+        assert_eq!(interactive_call_opacity(10_000, &options), 34);
+        assert_eq!(interactive_call_opacity(20_202, &options), 16);
+        assert_eq!(interactive_call_opacity(208_147, &options), 1);
 
         let fixed = RenderOptions {
             density_aware_exposure: false,
@@ -620,7 +631,25 @@ mod tests {
         )
         .unwrap();
         let html = fs::read_to_string(output).unwrap();
-        assert!(html.contains(&format!("\"sourceUrlTemplate\":\"{template}\"")));
+        let json = embedded_json(&html);
+        assert!(json.contains(&format!("\"sourceUrlTemplate\":\"{template}\"")));
+    }
+
+    fn embedded_json(html: &str) -> String {
+        let script = html.find("id=\"code-atlas-data\"").unwrap();
+        let length_marker = "data-uncompressed-bytes=\"";
+        let length_start =
+            html[script..].find(length_marker).unwrap() + script + length_marker.len();
+        let length_end = html[length_start..].find('"').unwrap() + length_start;
+        let decoded_len: usize = html[length_start..length_end].parse().unwrap();
+        let payload_start = html[script..].find('>').unwrap() + script + 1;
+        let payload_end = html[payload_start..].find("</script>").unwrap() + payload_start;
+        let compressed = BASE64.decode(&html[payload_start..payload_end]).unwrap();
+        let mut decoded = vec![0; decoded_len];
+        let (decoded, result) =
+            zlib_rs::decompress_slice(&mut decoded, &compressed, zlib_rs::InflateConfig::default());
+        assert_eq!(result, ReturnCode::Ok);
+        String::from_utf8(decoded.to_vec()).unwrap()
     }
 
     fn interactive_fixture() -> Atlas {

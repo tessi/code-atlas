@@ -128,7 +128,9 @@
     #atlas-tooltip {
       position: absolute;
       display: none;
+      box-sizing: border-box;
       max-width: min(380px, calc(100% - 24px));
+      overflow: hidden;
       padding: 7px 9px;
       color: var(--atlas-ink);
       background: var(--atlas-panel);
@@ -139,7 +141,14 @@
       line-height: 1.45;
       z-index: 3;
     }
-    #atlas-tooltip strong { display: block; font-weight: 500; overflow-wrap: anywhere; }
+    #atlas-tooltip strong,
+    #atlas-tooltip span {
+      display: block;
+      max-width: 100%;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    #atlas-tooltip strong { font-weight: 500; }
     #atlas-tooltip span { color: var(--atlas-muted); }
     .atlas-status {
       position: absolute;
@@ -163,6 +172,7 @@
     .atlas-panel-tools { display: grid; gap: 8px; padding: 10px; border-bottom: 1px solid var(--atlas-line); }
     .atlas-search { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
     .atlas-search input { min-width: 0; width: 100%; padding: 6px 8px; }
+    .atlas-search-message { grid-column: 1 / -1; color: var(--atlas-muted); font-size: 10px; line-height: 1.35; overflow-wrap: anywhere; }
     .atlas-call-scope { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; color: var(--atlas-muted); font-size: 10px; }
     .atlas-call-scope select { min-width: 0; max-width: 160px; }
     .atlas-selection { padding: 11px 12px; border-bottom: 1px solid var(--atlas-line); }
@@ -272,10 +282,11 @@
       </section>
       <aside class="atlas-panel" aria-label="Repository inspector">
         <section class="atlas-panel-tools" aria-label="Repository navigation and call filters">
-          <form id="atlas-search" class="atlas-search" role="search">
-            <input id="atlas-search-input" type="search" placeholder="Find a file path" aria-label="Find a file path">
-            <button type="submit">Find</button>
-          </form>
+          <div id="atlas-search" class="atlas-search" role="search">
+            <input id="atlas-search-input" type="search" placeholder="Find a file path" aria-label="Find a file path" disabled>
+            <button id="atlas-search-button" type="button" disabled>Find</button>
+            <div id="atlas-search-message" class="atlas-search-message" aria-live="polite">Available after the atlas finishes loading.</div>
+          </div>
           <div class="atlas-call-query">
             <input id="atlas-call-query" type="search" placeholder="Filter calls · in:*delivery*" aria-label="Filter individual calls" aria-describedby="atlas-query-message" autocomplete="off" spellcheck="false">
             <button id="atlas-query-clear" class="atlas-query-clear" type="button" aria-label="Clear call filter" title="Clear call filter">×</button>
@@ -347,12 +358,14 @@
       </aside>
     </div>
   </main>
-  <script id="code-atlas-data" type="application/json">__CODE_ATLAS_DATA__</script>
+  <script id="code-atlas-data" type="application/octet-stream" data-format="deflate-base64-v1" data-uncompressed-bytes="__CODE_ATLAS_DATA_BYTES__">__CODE_ATLAS_DATA__</script>
   <script>
-  (() => {
+  (async () => {
     'use strict';
     __CODE_ATLAS_WEBGPU__
-    const data = JSON.parse(document.getElementById('code-atlas-data').textContent);
+    const meta = document.getElementById('atlas-meta');
+    meta.textContent = 'Loading compressed atlas…';
+    const data = await decodeAtlasData(document.getElementById('code-atlas-data'));
     const app = document.getElementById('code-atlas-app');
     const stage = document.getElementById('atlas-stage');
     const canvas = document.getElementById('atlas-canvas');
@@ -360,6 +373,9 @@
     const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
     const tooltip = document.getElementById('atlas-tooltip');
     const status = document.getElementById('atlas-status');
+    const fileSearchInput = document.getElementById('atlas-search-input');
+    const fileSearchButton = document.getElementById('atlas-search-button');
+    const fileSearchMessage = document.getElementById('atlas-search-message');
     const callMode = document.getElementById('atlas-call-mode');
     const callQuery = document.getElementById('atlas-call-query');
     const queryClear = document.getElementById('atlas-query-clear');
@@ -391,10 +407,12 @@
     applyThemeStyles();
     document.title = data.title;
     document.getElementById('atlas-title').textContent = data.title.toUpperCase();
-    document.getElementById('atlas-meta').textContent = `${data.files.length.toLocaleString()} files / ${data.calls.length.toLocaleString()} calls / ${data.revision.slice(0, 12)}${data.dirty ? ' / dirty' : ''}`;
+    const atlasSummary = `${data.files.length.toLocaleString()} files / ${data.calls.length.toLocaleString()} calls / ${data.revision.slice(0, 12)}${data.dirty ? ' / dirty' : ''}`;
+    meta.textContent = 'Reconstructing call geometry…';
 
     const fileById = new Map(data.files.map(file => [file.id, file]));
     const fileByPath = new Map(data.files.map(file => [file.path, file]));
+    const nodeById = new Map([...data.directories, ...data.files].map(node => [node.id, node]));
     const callById = new Map(data.calls.map(call => [String(call.id), call]));
     for (let index = 0; index < data.files.length; index++) {
       const file = data.files[index];
@@ -403,7 +421,13 @@
     }
     for (let index = 0; index < data.labels.length; index++) data.labels[index].index = index;
     const hitFiles = [...data.files].sort((a, b) => rectArea(a.rect) - rectArea(b.rect) || b.depth - a.depth);
-    const rawPoints = base64Bytes(data.curvePointsBase64);
+    const rawPoints = await buildCurvePoints(data, nodeById, progress => {
+      meta.textContent = `Reconstructing call geometry… ${progress.toLocaleString()} / ${data.calls.length.toLocaleString()}`;
+    });
+    meta.textContent = atlasSummary;
+    fileSearchInput.disabled = false;
+    fileSearchButton.disabled = false;
+    fileSearchMessage.textContent = '';
     const pointView = new DataView(rawPoints.buffer, rawPoints.byteOffset, rawPoints.byteLength);
     const pickGridColumns = 96;
     const pickGridRows = Math.max(24, Math.round(pickGridColumns * data.height / data.width));
@@ -522,6 +546,185 @@
 
     function systemThemeChanged() {
       if (themePreference === 'system') setThemePreference('system', false);
+    }
+
+    async function decodeAtlasData(element) {
+      if (element.dataset.format !== 'deflate-base64-v1') throw new Error('Unsupported atlas data format');
+      if (typeof DecompressionStream !== 'function') throw new Error('This browser cannot decompress the embedded atlas data');
+      const compressed = base64Bytes(element.textContent.trim());
+      const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream('deflate'));
+      const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+      const expectedBytes = Number(element.dataset.uncompressedBytes);
+      if (Number.isFinite(expectedBytes) && bytes.byteLength !== expectedBytes) throw new Error('Embedded atlas data is incomplete');
+      return JSON.parse(new TextDecoder().decode(bytes));
+    }
+
+    async function buildCurvePoints(data, nodeById, onProgress) {
+      let totalPoints = 0;
+      for (const call of data.calls) {
+        const controlCount = hierarchyLength(call.source, call.target, nodeById) + 2;
+        const degree = Math.min(controlCount - 1, 3);
+        const segmentCount = Math.max((controlCount - degree) * 16, 64);
+        call.pointStart = totalPoints;
+        call.pointCount = segmentCount + 1;
+        totalPoints += call.pointCount;
+      }
+
+      const packed = new Uint8Array(totalPoints * 4);
+      const pointView = new DataView(packed.buffer);
+      const bundleStrength = Math.max(0, Math.min(1, Number(data.bundleStrength ?? .96)));
+      for (let callIndex = 0; callIndex < data.calls.length; callIndex++) {
+        const call = data.calls[callIndex];
+        const controls = callControlPoints(call, nodeById);
+        const first = controls[0];
+        const last = controls[controls.length - 1];
+        const denominator = Math.max(controls.length - 1, 1);
+        for (let index = 0; index < controls.length; index++) {
+          const amount = index / denominator;
+          const directX = first.x + (last.x - first.x) * amount;
+          const directY = first.y + (last.y - first.y) * amount;
+          controls[index] = {
+            x: directX + (controls[index].x - directX) * bundleStrength,
+            y: directY + (controls[index].y - directY) * bundleStrength
+          };
+        }
+
+        const degree = Math.min(controls.length - 1, 3);
+        const knots = clampedUniformKnots(controls.length, degree);
+        const segmentCount = call.pointCount - 1;
+        const scratchX = new Float64Array(degree + 1);
+        const scratchY = new Float64Array(degree + 1);
+        const sampled = { x: 0, y: 0 };
+        let minX = 65535;
+        let minY = 65535;
+        let maxX = 0;
+        let maxY = 0;
+        for (let sample = 0; sample <= segmentCount; sample++) {
+          deBoorPoint(controls, degree, knots, sample / segmentCount, scratchX, scratchY, sampled);
+          const x = quantizeCurveCoordinate(sampled.x, data.width);
+          const y = quantizeCurveCoordinate(sampled.y, data.height);
+          const offset = (call.pointStart + sample) * 4;
+          pointView.setUint16(offset, x, true);
+          pointView.setUint16(offset + 2, y, true);
+          minX = Math.min(minX, x);
+          minY = Math.min(minY, y);
+          maxX = Math.max(maxX, x);
+          maxY = Math.max(maxY, y);
+        }
+        call.bounds = [minX, minY, maxX, maxY];
+        if ((callIndex + 1) % 4096 === 0) {
+          onProgress(callIndex + 1);
+          await new Promise(resolve => setTimeout(resolve, 0));
+        }
+      }
+      onProgress(data.calls.length);
+      return packed;
+    }
+
+    function hierarchyLength(sourceId, targetId, nodeById) {
+      let source = nodeById.get(sourceId);
+      let target = nodeById.get(targetId);
+      let length = 1;
+      while (source.depth > target.depth) { source = nodeById.get(source.parent); length++; }
+      while (target.depth > source.depth) { target = nodeById.get(target.parent); length++; }
+      while (source.id !== target.id) {
+        source = nodeById.get(source.parent);
+        target = nodeById.get(target.parent);
+        length += 2;
+      }
+      return length;
+    }
+
+    function hierarchyPath(sourceId, targetId, nodeById) {
+      let source = nodeById.get(sourceId);
+      let target = nodeById.get(targetId);
+      const sourcePath = [];
+      const targetPath = [];
+      while (source.depth > target.depth) { sourcePath.push(source.id); source = nodeById.get(source.parent); }
+      while (target.depth > source.depth) { targetPath.push(target.id); target = nodeById.get(target.parent); }
+      while (source.id !== target.id) {
+        sourcePath.push(source.id);
+        targetPath.push(target.id);
+        source = nodeById.get(source.parent);
+        target = nodeById.get(target.parent);
+      }
+      sourcePath.push(source.id);
+      targetPath.reverse();
+      return sourcePath.concat(targetPath);
+    }
+
+    function callControlPoints(call, nodeById) {
+      const source = nodeById.get(call.source);
+      const target = nodeById.get(call.target);
+      const controls = [lineAnchor(source.rect, source.loc, call.sourceLine)];
+      for (const id of hierarchyPath(call.source, call.target, nodeById)) {
+        const rect = nodeById.get(id).rect;
+        controls.push({ x: (rect[0] + rect[2]) / 2, y: (rect[1] + rect[3]) / 2 });
+      }
+      controls.push(call.targetLine == null
+        ? { x: (target.rect[0] + target.rect[2]) / 2, y: (target.rect[1] + target.rect[3]) / 2 }
+        : lineAnchor(target.rect, target.loc, call.targetLine));
+      return controls;
+    }
+
+    function lineAnchor(rect, lineCount, line) {
+      const minX = Math.ceil(rect[0]);
+      const minY = Math.ceil(rect[1]);
+      const maxX = Math.floor(rect[2]);
+      const maxY = Math.floor(rect[3]);
+      const width = Math.max(0, maxX - minX);
+      const height = Math.max(0, maxY - minY);
+      if (width === 0 || height === 0) return { x: (rect[0] + rect[2]) / 2, y: (rect[1] + rect[3]) / 2 };
+      const pixels = Math.max(width * height, 1);
+      const lines = Math.max(Number(lineCount), 1);
+      const lineIndex = Math.min(Math.max(Number(line) - 1, 0), lines - 1);
+      const regionStart = Math.floor(lineIndex * pixels / lines);
+      const regionEnd = Math.min(pixels, Math.max(regionStart + 1, Math.ceil((lineIndex + 1) * pixels / lines)));
+      const pixelIndex = regionStart + Math.floor((regionEnd - regionStart - 1) / 2);
+      const row = Math.floor(pixelIndex / width);
+      const scanColumn = pixelIndex % width;
+      const column = row % 2 === 0 ? scanColumn : width - 1 - scanColumn;
+      return { x: minX + column + .5, y: minY + row + .5 };
+    }
+
+    function clampedUniformKnots(controlCount, degree) {
+      const interiorCount = Math.max(0, controlCount - degree - 1);
+      const knots = [];
+      for (let index = 0; index <= degree; index++) knots.push(0);
+      for (let index = 1; index <= interiorCount; index++) knots.push(index / (interiorCount + 1));
+      for (let index = 0; index <= degree; index++) knots.push(1);
+      return knots;
+    }
+
+    function deBoorPoint(controls, degree, knots, amount, scratchX, scratchY, output) {
+      const lastControl = controls.length - 1;
+      let span = lastControl;
+      if (amount < 1) {
+        for (let index = degree; index <= lastControl; index++) {
+          if (amount >= knots[index] && amount < knots[index + 1]) { span = index; break; }
+        }
+      }
+      for (let index = 0; index <= degree; index++) {
+        const point = controls[span - degree + index];
+        scratchX[index] = point.x;
+        scratchY[index] = point.y;
+      }
+      for (let level = 1; level <= degree; level++) {
+        for (let index = degree; index >= level; index--) {
+          const knotIndex = span - degree + index;
+          const denominator = knots[knotIndex + degree + 1 - level] - knots[knotIndex];
+          const alpha = Math.abs(denominator) <= Number.EPSILON ? 0 : (amount - knots[knotIndex]) / denominator;
+          scratchX[index] = scratchX[index - 1] + (scratchX[index] - scratchX[index - 1]) * alpha;
+          scratchY[index] = scratchY[index - 1] + (scratchY[index] - scratchY[index - 1]) * alpha;
+        }
+      }
+      output.x = scratchX[degree];
+      output.y = scratchY[degree];
+    }
+
+    function quantizeCurveCoordinate(value, extent) {
+      if (!Number.isFinite(value) || extent <= 0) return 0;
+      return Math.round(Math.max(0, Math.min(extent, value)) / extent * 65535);
     }
 
     function base64Bytes(encoded) {
@@ -969,7 +1172,13 @@
       params.set('x', (view.centerX / data.width).toFixed(6));
       params.set('y', (view.centerY / data.height).toFixed(6));
       const nextHash = `#${params.toString()}`;
-      if (window.location.hash !== nextHash) history.replaceState(null, '', nextHash);
+      if (window.location.hash !== nextHash) {
+        try {
+          history.replaceState(null, '', nextHash);
+        } catch (_) {
+          // Sandboxed document previews can deny history writes; navigation still works locally.
+        }
+      }
     }
 
     function scheduleHashSync() {
@@ -1055,14 +1264,19 @@
       if (!data.densityAwareExposure) return baseOpacity;
       const referenceCalls = Math.max(1, Number(data.densityReferenceCalls || 2500));
       const activeCalls = Math.max(1, callCount);
-      const exposureScale = Math.sqrt(referenceCalls / activeCalls);
-      return Math.round(Math.max(2, Math.min(160, baseOpacity * exposureScale)));
+      const fullStrengthUntil = referenceCalls * 4;
+      const exposureScale = activeCalls < referenceCalls
+        ? Math.pow(referenceCalls / activeCalls, .75)
+        : activeCalls <= fullStrengthUntil
+          ? 1
+          : Math.pow(fullStrengthUntil / activeCalls, 1.05);
+      return Math.round(Math.max(1, Math.min(160, baseOpacity * exposureScale)));
     }
 
     function currentCallAlpha(visibleCallCount) {
       state.visibleCallCount = visibleCallCount;
       state.effectiveCallOpacity = adaptiveCallOpacity(visibleCallCount);
-      return Math.max(.012, state.effectiveCallOpacity / 255);
+      return Math.max(1 / 255, state.effectiveCallOpacity / 255);
     }
 
     function drawCall(call, alpha, widthScale) {
@@ -1617,15 +1831,32 @@
     });
     pagePrev.addEventListener('click', () => { state.page = Math.max(0, state.page - 1); updateInspector(); });
     pageNext.addEventListener('click', () => { state.page++; updateInspector(); });
-    document.getElementById('atlas-search').addEventListener('submit', event => {
+    function runFileSearch() {
+      const query = fileSearchInput.value.trim().toLowerCase();
+      if (!query) {
+        fileSearchMessage.textContent = '';
+        return;
+      }
+      const matches = data.files.filter(file => file.queryPath.includes(query));
+      const exact = matches.find(file => file.queryPath === query || file.name.toLowerCase() === query);
+      const match = exact || matches[0];
+      if (!match) {
+        fileSearchMessage.textContent = `No file path contains “${query}”.`;
+        return;
+      }
+      selectFile(match, true);
+      fileSearchMessage.textContent = matches.length === 1
+        ? `Found ${match.path}`
+        : `${matches.length.toLocaleString()} matches · showing ${match.path}`;
+    }
+    fileSearchButton.addEventListener('click', runFileSearch);
+    fileSearchInput.addEventListener('keydown', event => {
+      if (event.key !== 'Enter') return;
       event.preventDefault();
-      const query = document.getElementById('atlas-search-input').value.trim().toLowerCase();
-      if (!query) return;
-      const exact = data.files.find(file => file.path.toLowerCase() === query);
-      const match = exact || data.files.find(file => file.path.toLowerCase().includes(query));
-      if (match) selectFile(match, true);
-      else status.textContent = `No file path contains “${query}”`;
+      event.stopPropagation();
+      runFileSearch();
     });
+    fileSearchInput.addEventListener('input', () => { fileSearchMessage.textContent = ''; });
     window.addEventListener('keydown', event => {
       if (event.key === 'Escape' && queryHelp.open) {
         queryHelp.open = false;
@@ -1683,7 +1914,11 @@
       renderNow: drawScene,
       callCount: data.calls.length
     };
-  })();
+  })().catch(error => {
+    const meta = document.getElementById('atlas-meta');
+    if (meta) meta.textContent = `Unable to open atlas: ${error instanceof Error ? error.message : String(error)}`;
+    console.error(error);
+  });
   </script>
 </body>
 </html>

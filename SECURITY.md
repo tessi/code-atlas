@@ -22,4 +22,6 @@ language tooling such as `mix`, `elixir`, `rust-analyzer`, or `scip-typescript`.
 Only run it against repositories and toolchains you trust. Generated HTML is
 self-contained and contains no source text, but it does contain repository
 paths, revision identifiers, metrics, call metadata, and curve geometry; treat
-those files as potentially sensitive project metadata.
+those files as potentially sensitive project metadata. Code Atlas also writes a
+derived analysis cache containing call metadata under `.git/code-atlas/`; delete
+that directory to clear it.

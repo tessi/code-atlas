@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     fmt,
-    path::PathBuf,
+    path::{Path, PathBuf},
     str::FromStr,
 };
 
@@ -102,6 +102,8 @@ pub struct Callsite {
 pub struct AnalyzerReport {
     pub elixir_files_traced: usize,
     pub elixir_script_files_scanned: usize,
+    #[serde(default)]
+    pub erlang_files_scanned: usize,
     pub typescript_files_scanned: usize,
     pub gleam_files_scanned: usize,
     pub rust_files_scanned: usize,
@@ -111,6 +113,8 @@ pub struct AnalyzerReport {
     pub rust_calls: usize,
     pub typescript_calls: usize,
     pub gleam_calls: usize,
+    #[serde(default)]
+    pub erlang_calls: usize,
     #[serde(default)]
     pub same_file_calls_excluded: usize,
     pub cache_hit: bool,
@@ -160,6 +164,20 @@ impl Atlas {
         self.files().map(|node| node.loc).sum()
     }
 
+    /// Retain calls matching repository-relative endpoint path filters.
+    ///
+    /// Values inside one filter group are ORed; non-empty groups are ANDed.
+    /// A prefix matches either one file exactly or every file below a directory.
+    pub fn filter_calls(&mut self, filters: &CallPathFilters) -> usize {
+        let before = self.calls.len();
+        self.calls.retain(|call| {
+            let source = &self.nodes[call.source].path;
+            let target = &self.nodes[call.target].path;
+            filters.matches(source, target)
+        });
+        before - self.calls.len()
+    }
+
     pub fn hierarchy_path(&self, source: NodeId, target: NodeId) -> Vec<NodeId> {
         let mut source_chain = Vec::new();
         let mut current = Some(source);
@@ -197,6 +215,68 @@ impl Atlas {
         path.extend(target_chain[..target_lca_index].iter().rev().copied());
         path
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallPathFilters {
+    pub sources: Vec<String>,
+    pub targets: Vec<String>,
+    pub paths: Vec<String>,
+}
+
+impl CallPathFilters {
+    pub fn new(sources: &[String], targets: &[String], paths: &[String]) -> Result<Self> {
+        Ok(Self {
+            sources: normalize_call_paths(sources)?,
+            targets: normalize_call_paths(targets)?,
+            paths: normalize_call_paths(paths)?,
+        })
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.sources.is_empty() && self.targets.is_empty() && self.paths.is_empty()
+    }
+
+    pub fn matches(&self, source: &str, target: &str) -> bool {
+        (self.sources.is_empty() || self.sources.iter().any(|path| path_matches(source, path)))
+            && (self.targets.is_empty()
+                || self.targets.iter().any(|path| path_matches(target, path)))
+            && (self.paths.is_empty()
+                || self
+                    .paths
+                    .iter()
+                    .any(|path| path_matches(source, path) || path_matches(target, path)))
+    }
+}
+
+fn normalize_call_paths(paths: &[String]) -> Result<Vec<String>> {
+    let mut normalized = Vec::new();
+    for path in paths {
+        let path = path.trim().replace('\\', "/");
+        let path = path.trim_matches('/');
+        if path.is_empty() {
+            bail!("call filter paths cannot be empty");
+        }
+        if Path::new(path).is_absolute()
+            || path
+                .split('/')
+                .any(|component| component == ".." || component.is_empty())
+        {
+            bail!("call filter {path:?} must be a repository-relative path");
+        }
+        if !normalized.iter().any(|existing| existing == path) {
+            normalized.push(path.to_owned());
+        }
+    }
+    normalized.sort();
+    Ok(normalized)
+}
+
+fn path_matches(path: &str, filter: &str) -> bool {
+    path == filter
+        || path
+            .strip_prefix(filter)
+            .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -237,5 +317,34 @@ impl FromStr for Metric {
             "commits" => Ok(Self::Commits),
             _ => bail!("unknown metric {value:?}; expected loc, bytes, or commits"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn call_path_filters_or_within_groups_and_across_groups() {
+        let filters = CallPathFilters::new(
+            &["apps/billing".to_owned(), "apps/payments".to_owned()],
+            &["lib/notifications.ex".to_owned()],
+            &[],
+        )
+        .unwrap();
+
+        assert!(filters.matches("apps/billing/invoice.ex", "lib/notifications.ex"));
+        assert!(filters.matches("apps/payments/card.ex", "lib/notifications.ex"));
+        assert!(!filters.matches("apps/search/query.ex", "lib/notifications.ex"));
+        assert!(!filters.matches("apps/billing/invoice.ex", "lib/audit.ex"));
+    }
+
+    #[test]
+    fn call_path_filter_matches_either_endpoint_on_component_boundaries() {
+        let filters = CallPathFilters::new(&[], &[], &["apps/pay".to_owned()]).unwrap();
+
+        assert!(filters.matches("apps/pay/source.ex", "lib/target.ex"));
+        assert!(filters.matches("lib/source.ex", "apps/pay/target.ex"));
+        assert!(!filters.matches("apps/payments/source.ex", "lib/target.ex"));
     }
 }

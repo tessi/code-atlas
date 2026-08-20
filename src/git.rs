@@ -36,7 +36,13 @@ pub fn scan_repository(
     let excluded_paths = normalize_excluded_paths(excluded_paths)?;
     let tracked = tracked_paths(&root, include_tests, include_hidden, &excluded_paths)?;
     let paths = tracked.paths;
-    let commit_counts = commit_counts(&root)?;
+    // Walking the complete repository history dominates scans of large
+    // monorepos. Only pay that cost when commit count is the selected metric.
+    let commit_counts = if metric == Metric::Commits {
+        commit_counts(&root)?
+    } else {
+        HashMap::new()
+    };
     let stats: Result<Vec<_>> = paths
         .par_iter()
         .map(|path| read_file_stats(&root, path, &commit_counts))
@@ -361,7 +367,8 @@ fn language_for_path(path: &str) -> &'static str {
         .extension()
         .and_then(|extension| extension.to_str())
     {
-        Some("ex") | Some("exs") => "elixir",
+        Some("ex") | Some("exs") | Some("eex") => "elixir",
+        Some("erl") => "erlang",
         Some("rs") => "rust",
         Some("js") | Some("jsx") | Some("mjs") | Some("cjs") => "javascript",
         Some("ts") | Some("tsx") | Some("mts") | Some("cts") => "typescript",
@@ -462,6 +469,8 @@ mod tests {
         for path in ["src/a.ts", "src/a.tsx", "src/a.mts", "src/a.cts"] {
             assert_eq!(language_for_path(path), "typescript");
         }
+        assert_eq!(language_for_path("lib/templates/a.eex"), "elixir");
+        assert_eq!(language_for_path("lib/compiler/a.erl"), "erlang");
         assert_eq!(language_for_path("src/a.gleam"), "gleam");
     }
 

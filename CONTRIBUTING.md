@@ -12,10 +12,10 @@ cargo build --locked
 cargo test --locked
 ```
 
-Elixir, `rust-analyzer`, and `scip-typescript` are optional for the unit tests.
-They are useful when manually validating analyzer coverage against real local
-repositories. Do not commit third-party repository checkouts or generated atlas
-outputs.
+Elixir/Erlang, `rust-analyzer`, and `scip-typescript` are optional for the unit
+tests. They are useful when manually validating analyzer coverage against real
+local repositories. Do not commit third-party repository checkouts, generated
+atlas outputs, or analysis caches.
 
 Before submitting a change, run the same core checks as CI:
 
@@ -36,6 +36,8 @@ Please preserve these properties unless a proposal explicitly changes them:
 - source and target anchors retain their line information;
 - same-file calls, tests, hidden paths, and configured paths are excluded before
   layout;
+- endpoint filters run after reusable semantic analysis and never aggregate the
+  retained callsites;
 - software optical-density rendering remains the deterministic reference;
 - light and dark modes use the same physical pigment model;
 - generated HTML remains self-contained and makes no runtime network requests.

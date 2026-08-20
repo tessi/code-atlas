@@ -18,6 +18,9 @@ use crate::{
     model::{Atlas, NodeKind, Point, Rect},
 };
 
+pub(crate) const DENSITY_KNEE_MULTIPLIER: usize = 4;
+pub(crate) const DENSE_EXPOSURE_EXPONENT: f64 = 1.05;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenderBackend {
     Software,
@@ -950,16 +953,20 @@ fn srgb_to_linear(value: u8) -> f32 {
 }
 
 pub fn effective_call_opacity(call_count: usize, options: &RenderOptions) -> u8 {
+    let reference_calls = options.density_reference_calls.max(1);
+    let full_strength_until = reference_calls.saturating_mul(DENSITY_KNEE_MULTIPLIER);
     if !options.density_aware_exposure
-        || call_count <= options.density_reference_calls.max(1)
+        || call_count <= full_strength_until
         || options.call_opacity == 0
     {
         return options.call_opacity;
     }
-    let scale = (options.density_reference_calls.max(1) as f64 / call_count as f64).sqrt();
+    // Keep ordinary maps at full strength. Past the density knee, fall off
+    // steeply enough that very large maps still reveal their dominant bundles.
+    let scale = (full_strength_until as f64 / call_count as f64).powf(DENSE_EXPOSURE_EXPONENT);
     (f64::from(options.call_opacity) * scale)
         .round()
-        .clamp(2.0, f64::from(options.call_opacity)) as u8
+        .clamp(1.0, f64::from(options.call_opacity)) as u8
 }
 
 fn draw_paper_texture(pixmap: &mut Pixmap, seed: u64, color: Rgba) -> Result<()> {
@@ -1941,6 +1948,7 @@ impl Palette {
     pub(crate) fn file_color(self, language: &str) -> Rgba {
         match language {
             "elixir" => self.elixir,
+            "erlang" => self.elixir,
             "rust" => self.rust,
             "markdown" => self.docs,
             "config" | "data" => self.config,
@@ -2105,7 +2113,10 @@ mod tests {
     fn density_exposure_preserves_small_graphs_and_lowers_large_graphs() {
         let options = RenderOptions::default();
         assert_eq!(effective_call_opacity(2_500, &options), 34);
-        assert_eq!(effective_call_opacity(21_307, &options), 12);
+        assert_eq!(effective_call_opacity(5_345, &options), 34);
+        assert_eq!(effective_call_opacity(10_000, &options), 34);
+        assert_eq!(effective_call_opacity(21_307, &options), 15);
+        assert_eq!(effective_call_opacity(208_147, &options), 1);
 
         let fixed = RenderOptions {
             density_aware_exposure: false,
